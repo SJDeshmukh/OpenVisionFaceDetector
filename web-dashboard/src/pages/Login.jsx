@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 import { Lock, User, Eye, EyeOff, Zap, Mail } from 'lucide-react';
@@ -84,8 +84,26 @@ const Login = () => {
   const [resetEmail, setResetEmail] = useState('');
   const [resetStatus, setResetStatus] = useState({ type: '', message: '' });
   const [resetting, setResetting] = useState(false);
-  const { login, logout, loginAsStaff } = useAuth();
+  const { user, login, logout, loginAsStaff } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const redirectTarget = searchParams.get('redirect');
+
+  // If already logged in, automatically navigate to the requested redirect target or default dashboard
+  useEffect(() => {
+    if (user) {
+      if (redirectTarget) {
+        navigate(redirectTarget, { replace: true });
+      } else if (user.role === 'super_admin') {
+        navigate('/admin/vendors', { replace: true });
+      } else if (user.role === 'user' || user.role === 'student') {
+        const isStudent = usesStudentRecords(user?.vertical);
+        navigate(isStudent ? '/leave-management' : '/attendance', { replace: true });
+      } else {
+        navigate('/dashboard', { replace: true });
+      }
+    }
+  }, [user, redirectTarget, navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -97,10 +115,12 @@ const Login = () => {
       if (result.role === 'super_admin') { logout(); setError('This account uses a separate sign-in portal.'); return; }
       if (result.force_password_change) { setShowPasswordChange(true); return; }
       if (result.status === 'success' && result.needs_student_password) { setShowStudentPasswordModal(true); return; }
+      const storedUser = JSON.parse(localStorage.getItem('user'));
+      if (storedUser?.role === 'vendor_admin' && storedUser?.features?.includes('leave_management')) { setStep(1); return; }
+      if (redirectTarget) { navigate(redirectTarget); return; }
       if (result.role === 'faculty') { navigate('/classes'); return; }
       if (result.role === 'user' || result.role === 'student') {
-        const storedUser = JSON.parse(localStorage.getItem('user')) || {};
-        const vertical = storedUser.vertical || result.vertical;
+        const vertical = storedUser?.vertical || result.vertical;
         const isStudent = usesStudentRecords(vertical);
         if (isStudent) {
           navigate('/leave-management');
@@ -110,8 +130,6 @@ const Login = () => {
         return;
       }
       if (result.role === 'owner') { navigate('/owner/advances'); return; }
-      const storedUser = JSON.parse(localStorage.getItem('user'));
-      if (storedUser?.role === 'vendor_admin' && storedUser?.features?.includes('leave_management')) { setStep(1); return; }
       if (result.redirect_url) { navigate(result.redirect_url); return; }
       navigate('/dashboard');
     } else {
@@ -123,8 +141,15 @@ const Login = () => {
     e.preventDefault();
     setError('');
     const res = await loginAsStaff(pin);
-    if (res.success) navigate('/leave-management');
-    else setError(res.error || 'Invalid PIN');
+    if (res.success) {
+      if (redirectTarget) {
+        navigate(redirectTarget);
+      } else {
+        navigate('/leave-management');
+      }
+    } else {
+      setError(res.error || 'Invalid PIN');
+    }
   };
 
   const handlePasswordChange = async (e) => {
@@ -297,6 +322,15 @@ const Login = () => {
                     </motion.div>
                   )}
                 </AnimatePresence>
+
+                {redirectTarget && (
+                  <div
+                    className="flex items-center gap-2 p-3 rounded-xl text-xs font-medium"
+                    style={{ background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.25)', color: '#818CF8' }}
+                  >
+                    <span>🔒 Please sign in to access the leave review portal.</span>
+                  </div>
+                )}
 
                 <Field label="Email" icon={User} type="text"
                   value={username} onChange={e => setUsername(e.target.value)}

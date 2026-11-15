@@ -3,6 +3,7 @@ import time
 import sqlite3
 import base64
 import json
+import re
 try:
     import psycopg2
     from psycopg2.extras import RealDictCursor

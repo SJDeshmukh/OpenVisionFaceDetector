@@ -282,7 +282,8 @@ def _send_leave_stage_email_async(vendor_id, request_id, stage):
 
             from services.email_service import send_email
 
-            subject = f"[Action Required] Leave Request from {student_name} - {vendor_name}"
+            # Distinct subject with request ID to guarantee separate email threads in Gmail/Outlook
+            subject = f"Leave Request #{request_id} · {student_name} ({leave_type}) · {stage_name}"
             for staff_row in approvers:
                 staff_dict = get_row_dict(staff_row)
                 staff_name = staff_dict.get("name") if isinstance(staff_dict, dict) else staff_row[0]
@@ -294,13 +295,15 @@ def _send_leave_stage_email_async(vendor_id, request_id, stage):
 
 A new leave request is awaiting your review and approval for stage: {stage_name}.
 
+Request ID: #{request_id}
 Student: {student_name}
 Department / Branch: {student_dept or 'N/A'}
 Leave Type: {leave_type}
 Duration: {start_date} to {end_date}
 Reason: {reason}
 
-Please log in to the TapInX Staff Portal to review and approve or reject this request.
+Review & Approve Request:
+https://openvisionx.in/?redirect=/leave-management
 
 Regards,
 {vendor_name} Leave Management System
@@ -310,20 +313,24 @@ Regards,
                 <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
                     <div style="border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 20px;">
                         <h2 style="color: #1e293b; margin: 0; font-size: 20px;">TapInX | Leave Approval Request</h2>
-                        <p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px;">Stage: <strong>{stage_name}</strong> · Vendor: {vendor_name}</p>
+                        <p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px;">Stage: <strong>{stage_name}</strong> · Request #{request_id} · Vendor: {vendor_name}</p>
                     </div>
 
                     <p style="color: #334155; font-size: 15px; margin-bottom: 16px;">
                         Hello <strong>{staff_name}</strong>,
                     </p>
                     <p style="color: #475569; font-size: 14px; margin-bottom: 20px; line-height: 1.5;">
-                        A student leave request has advanced to your stage and is awaiting your review and authorization.
+                        A student leave request (<strong>#{request_id}</strong>) has advanced to your stage and is awaiting your review and authorization.
                     </p>
 
                     <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
                         <table style="width: 100%; border-collapse: collapse; font-size: 13px; color: #334155;">
                             <tr>
-                                <td style="padding: 6px 0; color: #64748b; width: 140px;">Student Name:</td>
+                                <td style="padding: 6px 0; color: #64748b; width: 140px;">Request ID:</td>
+                                <td style="padding: 6px 0; font-weight: 600; color: #2563eb;">#{request_id}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b;">Student Name:</td>
                                 <td style="padding: 6px 0; font-weight: 600;">{student_name}</td>
                             </tr>
                             <tr>
@@ -346,7 +353,7 @@ Regards,
                     </div>
 
                     <div style="text-align: center; margin: 28px 0 16px 0;">
-                        <a href="https://openvisionx.in/leave" style="background: #2563eb; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
+                        <a href="https://openvisionx.in/?redirect=/leave-management" style="background: #2563eb; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
                             Open Staff Portal & Review Request
                         </a>
                     </div>

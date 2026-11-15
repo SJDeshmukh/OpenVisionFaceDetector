@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation, useSearchParams } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import People from './pages/People';
@@ -33,14 +33,33 @@ import PrivacyPolicy from './pages/PrivacyPolicy';
 import { usesStudentRecords } from './lib/businessTerminology';
 import { staffCanAccessNav } from './lib/staffNavigation';
 
+// Root Redirection Handler (handles ?redirect=... query param from email links or latest login session)
+const RootRedirect = () => {
+  const [searchParams] = useSearchParams();
+  const redirectTarget = searchParams.get('redirect');
+  const { user } = useAuth();
+
+  if (redirectTarget) {
+    return <Navigate to={redirectTarget} replace />;
+  }
+  if (user?.role === 'user' || user?.role === 'student') {
+    const isStudent = usesStudentRecords(user?.vertical);
+    return <Navigate to={isStudent ? "/leave-management" : "/attendance"} replace />;
+  }
+  return <Navigate to="/dashboard" replace />;
+};
+
 // Protected Route Component
 const ProtectedRoute = ({ allowedRoles }) => {
   const { user } = useAuth();
+  const location = useLocation();
 
   if (!user) {
-    // Redirect logic based on where they are trying to go?
-    // For now, default to /login. SuperAdminLogin handles its own auth.
-    return <Navigate to="/login" replace />;
+    const currentTarget = location.pathname + location.search;
+    const loginTarget = currentTarget && currentTarget !== '/'
+      ? `/login?redirect=${encodeURIComponent(currentTarget)}`
+      : '/login';
+    return <Navigate to={loginTarget} replace />;
   }
 
   if (allowedRoles && !allowedRoles.includes(user.role)) {
@@ -103,6 +122,7 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/privacy-policy" element={<PrivacyPolicy />} />
             <Route path="/privacy" element={<Navigate to="/privacy-policy" replace />} />
+            <Route path="/leave" element={<Navigate to="/leave-management" replace />} />
             <Route path="/super_admin" element={<SuperAdminLogin />} />
 
             {/* Standalone Protected Routes */}
@@ -126,7 +146,7 @@ function App() {
 
               {/* Admin/Rector/HOD/Faculty Routes */}
               <Route element={<ProtectedRoute allowedRoles={['admin', 'vendor_admin', 'owner', 'rector', 'hod', 'user', 'student', 'faculty']} />}>
-                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/" element={<RootRedirect />} />
                 <Route path="/dashboard" element={<StaffNavigationRoute navKey="dashboard"><Dashboard /></StaffNavigationRoute>} />
                 <Route path="/people" element={<StaffNavigationRoute navKey="people"><People /></StaffNavigationRoute>} />
                 <Route path="/attendance" element={<StaffNavigationRoute navKey="attendance"><Attendance /></StaffNavigationRoute>} />

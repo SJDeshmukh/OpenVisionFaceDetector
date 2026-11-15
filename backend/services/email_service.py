@@ -87,12 +87,17 @@ def send_email(subject, text_body, recipient, attachments=None, html_body=None, 
         except Exception as ex:
             logger.warning(f"Could not check vendor features for email: {ex}")
 
+    import uuid
+
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = formataddr((sender_name, sender))
     message["To"] = recipient
     message["Date"] = formatdate(localtime=False)
     message["Message-ID"] = make_msgid(domain=sender.split("@")[-1] if "@" in sender else None)
+    # Ensure separate email conversation threads in Gmail / Outlook
+    message["X-Entity-Ref-ID"] = f"leave-{vendor_id or 'ovx'}-{uuid.uuid4().hex}"
+    message["Thread-Topic"] = subject
     message.set_content(text_body)
 
     if html_body:
