@@ -364,14 +364,6 @@ Regards,
                     </div>
 
                     <div style="text-align: center; margin: 28px 0 16px 0;">
-                        <!-- Live Dynamic Status Badge (updates in real-time when reopened in inbox) -->
-                        <div style="margin-bottom: 14px;">
-                            <img src="{badge_url}"
-                                 alt="Status"
-                                 width="260"
-                                 height="36"
-                                 style="display: inline-block; max-width: 100%; height: auto; vertical-align: middle; border: none; border-radius: 18px;" />
-                        </div>
                         <a href="{portal_link}" style="background: #2563eb; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
                             Open Staff Portal & Review Request
                         </a>
@@ -587,14 +579,6 @@ Regards,
                     </div>
 
                     <div style="text-align: center; margin: 24px 0 16px 0;">
-                        <!-- Live Dynamic Status Badge (updates in real-time when reopened in inbox) -->
-                        <div style="margin-bottom: 14px;">
-                            <img src="{badge_url}"
-                                 alt="Status"
-                                 width="260"
-                                 height="36"
-                                 style="display: inline-block; max-width: 100%; height: auto; vertical-align: middle; border: none; border-radius: 18px;" />
-                        </div>
                         <a href="{portal_link}" style="background: #0f172a; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
                             Open Staff Portal
                         </a>
