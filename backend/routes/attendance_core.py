@@ -218,7 +218,7 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
     request_args = {
         key: value for key, value in request.args.items()
         if value not in (None, "") and key not in {
-            "start_date", "end_date", "limit", "offset", "person_type", "device_name",
+            "start_date", "end_date", "limit", "offset", "person_type", "device_name", "nocache", "token", "_", "t", "format", "download", "export",
         }
     }
     
@@ -1268,7 +1268,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
         if value not in (None, "") and key not in {
             "start_date", "end_date", "name", "person_id", "department",
             "designation", "shift", "phone", "limit", "offset", "person_type",
-            "device_name",
+            "device_name", "nocache", "token", "_", "t", "format", "download", "export",
         }
     }
     requested_device = str(request.args.get("device_name") or "").strip()

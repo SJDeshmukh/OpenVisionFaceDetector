@@ -25,6 +25,7 @@ const Attendance = () => {
   const [error, setError] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [expandedRow, setExpandedRow] = useState(null);
+  const lastRequestIdRef = useRef(0);
   const parseDate = (timestamp) => {
     if (!timestamp) return new Date();
     // Handle various formats: ISO, SQLite, Postgres
@@ -79,8 +80,10 @@ const Attendance = () => {
 
   useEffect(() => {
     fetchLogs(); // Trigger fetch on mount and filter change
+  }, [filters, personType]);
 
-    if (!socket) return;
+  useEffect(() => {
+    if (!socket || !user?.vendor_id) return;
     const handleAttendanceUpdated = (ev) => {
       // If filters are active, we might need a full refresh to be safe
       // but for "real time" we can just re-fetch the current view.
@@ -91,6 +94,7 @@ const Attendance = () => {
     };
     const handlePersonsUpdated = (ev) => {
       if (String(ev.vendor_id) === String(user.vendor_id)) {
+        if (ev.action === 'reconcile') return; // Ignore kiosk connection handshake
         fetchLogs(true, true);
         fetchFilters(filtersRef.current);
       }
@@ -102,7 +106,7 @@ const Attendance = () => {
       socket.off('attendance_updated', handleAttendanceUpdated);
       socket.off('persons_updated', handlePersonsUpdated);
     };
-  }, [filters, socket, user?.vendor_id, personType]); // Re-create listener when filters change to ensure correct context if needed
+  }, [socket, user?.vendor_id]);
 
   useEffect(() => {
     const t = setTimeout(() => fetchFilters(filtersRef.current), 250);
@@ -135,6 +139,7 @@ const Attendance = () => {
   };
 
   const fetchLogs = async (isBackground = false, forceRefresh = false) => {
+    const requestId = ++lastRequestIdRef.current;
     // Only set refreshing state for manual actions (not auto-refresh)
     if (!isBackground) setIsRefreshing(true);
 
@@ -159,6 +164,7 @@ const Attendance = () => {
       }
       const headers = forceRefresh ? { 'Cache-Control': 'no-cache' } : {};
       const response = await axios.get(`${API_URL}/attendance?${params.toString()}`, { headers });
+      if (requestId !== lastRequestIdRef.current) return;
       const list = response.data?.attendance || [];
       setLogs(list);
       try {
@@ -171,14 +177,17 @@ const Attendance = () => {
       } catch (e) { }
       setError(null);
     } catch (error) {
+      if (requestId !== lastRequestIdRef.current) return;
       console.error("Error fetching logs:", error);
       if (error.response && error.response.status === 403) {
         setError(error.response.data.error || "Access Denied");
       }
     } finally {
-      // Always turn off blocking loader (for initial load) and refreshing spinner
-      setLoading(false);
-      setIsRefreshing(false);
+      if (requestId === lastRequestIdRef.current) {
+        // Always turn off blocking loader (for initial load) and refreshing spinner
+        setLoading(false);
+        setIsRefreshing(false);
+      }
     }
   };
 
