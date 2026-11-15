@@ -22,7 +22,8 @@ import {
   ChevronRight,
   Edit2,
   X,
-  Ban
+  Ban,
+  AlertTriangle
 } from 'lucide-react';
 import { getBusinessTerminology, usesStudentRecords, isHostelVertical } from '../lib/businessTerminology';
 
@@ -96,12 +97,52 @@ const LeaveManagement = () => {
     }
   };
 
+  const [toast, setToast] = useState(null);
+  const toastTimeoutRef = React.useRef(null);
+
+  const showToast = ({ type = 'info', title, message, subtext, overlap, actionText, onAction, duration = 6000 }) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToast({ type, title, message, subtext, overlap, actionText, onAction });
+    if (duration > 0) {
+      toastTimeoutRef.current = setTimeout(() => {
+        setToast(null);
+      }, duration);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    };
+  }, []);
+
+  const isLeaveStarted = (req) => {
+    if (!req?.start_date) return false;
+    try {
+      const [y, m, d] = req.start_date.split('-').map(Number);
+      const [h, min] = (req.start_time || '00:00').split(':').map(Number);
+      const startDateTime = new Date(y, m - 1, d, h || 0, min || 0);
+      return new Date() >= startDateTime;
+    } catch (e) {
+      return false;
+    }
+  };
+
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancellationReason, setCancellationReason] = useState('');
   const [submittingCancel, setSubmittingCancel] = useState(false);
 
   const handleOpenCancelModal = (req) => {
+    if (isLeaveStarted(req)) {
+      showToast({
+        type: 'error',
+        title: 'Cannot Cancel Started Leave',
+        message: 'Leave requests that have already commenced cannot be cancelled.',
+        duration: 5000,
+      });
+      return;
+    }
     setCancelTarget(req);
     setCancellationReason('');
     setCancelModalOpen(true);
@@ -109,7 +150,12 @@ const LeaveManagement = () => {
 
   const handleConfirmCancel = async () => {
     if (!cancellationReason.trim()) {
-      alert("Please provide a reason for cancelling this leave.");
+      showToast({
+        type: 'error',
+        title: 'Cancellation Reason Required',
+        message: 'Please provide a reason for cancelling this leave.',
+        duration: 4000,
+      });
       return;
     }
     setSubmittingCancel(true);
@@ -118,13 +164,24 @@ const LeaveManagement = () => {
         request_id: cancelTarget.id,
         cancellation_reason: cancellationReason.trim()
       }, isRegularUser ? {} : staffRequestConfig);
-      alert(res.data.message || "Cancellation submitted! Awaiting parent approval on mobile app.");
+      showToast({
+        type: 'success',
+        title: 'Cancellation Submitted',
+        message: res.data.message || 'Leave cancellation requested! Awaiting parent approval on mobile app.',
+        duration: 5000,
+      });
       setCancelModalOpen(false);
       setCancelTarget(null);
       setCancellationReason('');
       fetchData();
     } catch (err) {
-      alert("Error submitting cancellation: " + (err.response?.data?.error || err.message));
+      const errData = err.response?.data || {};
+      showToast({
+        type: 'error',
+        title: 'Cancellation Failed',
+        message: errData.error || err.message || 'Failed to submit cancellation request.',
+        duration: 6000,
+      });
     } finally {
       setSubmittingCancel(false);
     }
@@ -269,7 +326,12 @@ const LeaveManagement = () => {
   const handleSubmitRequest = async (e) => {
     e.preventDefault();
     if (formData.start_date && formData.end_date && formData.start_date > formData.end_date) {
-      alert("Error: Start date cannot be after end date.");
+      showToast({
+        type: 'error',
+        title: 'Invalid Date Range',
+        message: 'Start date cannot be after end date.',
+        duration: 4000,
+      });
       return;
     }
     setLoading(true);
@@ -284,13 +346,23 @@ const LeaveManagement = () => {
       }
       
       if (!payload.student_id) {
-        alert(`Error: ${terminology.person} ID is missing. Please re-login.`);
+        showToast({
+          type: 'error',
+          title: 'Account Incomplete',
+          message: `${terminology.person} ID is missing. Please re-login.`,
+          duration: 5000,
+        });
         setLoading(false);
         return;
       }
 
       await axios.post(`${API_URL}/leave/request`, payload);
-      alert("Leave request submitted successfully! Pending approval.");
+      showToast({
+        type: 'success',
+        title: 'Leave Application Submitted',
+        message: 'Your leave request has been submitted successfully and sent for approval.',
+        duration: 5000,
+      });
       setFormData({
         leave_type: isStudentFlow ? 'home' : 'casual',
         reason: '',
@@ -301,7 +373,30 @@ const LeaveManagement = () => {
       });
       if (isRegularUser) setActiveTab('history');
     } catch (err) {
-      alert("Error submitting request: " + (err.response?.data?.error || err.message));
+      const errData = err.response?.data || {};
+      if (errData.error_code === 'LEAVE_OVERLAP' && errData.overlap) {
+        const ov = errData.overlap;
+        showToast({
+          type: 'overlap',
+          title: 'Overlapping Leave Dates Conflict',
+          message: `You already have a leave request (${formatLeaveType(ov.leave_type)}) from ${ov.start_date} to ${ov.end_date} (Status: ${String(ov.final_status).toUpperCase()}).`,
+          subtext: 'Overlapping leave dates are not allowed. If your travel plans have changed, you can cancel your previous leave request in the History tab.',
+          overlap: ov,
+          actionText: 'View in My History',
+          onAction: () => {
+            setActiveTab('history');
+            setToast(null);
+          },
+          duration: 12000,
+        });
+      } else {
+        showToast({
+          type: 'error',
+          title: 'Unable to Submit Leave',
+          message: errData.error || err.message || 'An error occurred while submitting your leave request.',
+          duration: 6000,
+        });
+      }
     } finally {
       setLoading(false);
     }
@@ -402,6 +497,97 @@ const LeaveManagement = () => {
 
   return (
     <div className="space-y-6">
+      {/* Interactive Modern Toast / Alert Notification */}
+      {toast && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[200] max-w-lg w-[calc(100%-2rem)] px-2 animate-in fade-in slide-in-from-top-4 duration-200">
+          {toast.type === 'overlap' ? (
+            <div className="bg-white rounded-2xl border-2 border-amber-400 p-4 shadow-2xl shadow-amber-500/10 flex flex-col gap-3">
+              <div className="flex items-start gap-3">
+                <div className="p-2.5 bg-amber-100 text-amber-700 rounded-xl shrink-0 mt-0.5">
+                  <AlertTriangle size={22} className="text-amber-600 animate-pulse" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="font-bold text-amber-950 text-sm">{toast.title}</h4>
+                    <button
+                      onClick={() => setToast(null)}
+                      className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors"
+                      title="Dismiss"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                  <p className="text-xs text-amber-900 mt-1 leading-relaxed">{toast.message}</p>
+                  {toast.overlap && (
+                    <div className="mt-2.5 p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-xs flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-amber-700 tracking-wider block">Existing Leave</span>
+                        <span className="font-semibold text-slate-800">{formatLeaveType(toast.overlap.leave_type)}</span>
+                        <span className="text-slate-500 ml-1.5 font-mono">({toast.overlap.start_date} &rarr; {toast.overlap.end_date})</span>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-amber-200 text-amber-900">
+                        {toast.overlap.final_status}
+                      </span>
+                    </div>
+                  )}
+                  {toast.subtext && (
+                    <p className="text-[11px] text-amber-800/80 mt-2 leading-relaxed">
+                      {toast.subtext}
+                    </p>
+                  )}
+                </div>
+              </div>
+              {toast.actionText && toast.onAction && (
+                <div className="flex justify-end pt-2 border-t border-amber-100">
+                  <button
+                    onClick={toast.onAction}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-colors shadow-xs"
+                  >
+                    <span>{toast.actionText}</span>
+                    <ChevronRight size={14} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : toast.type === 'error' ? (
+            <div className="bg-white rounded-2xl border border-rose-300 p-4 shadow-2xl flex items-start gap-3">
+              <div className="p-2 bg-rose-100 text-rose-600 rounded-xl shrink-0 mt-0.5">
+                <XCircle size={20} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="font-bold text-rose-950 text-sm">{toast.title}</h4>
+                  <button
+                    onClick={() => setToast(null)}
+                    className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                <p className="text-xs text-rose-800 mt-1 leading-relaxed">{toast.message}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl border border-emerald-300 p-4 shadow-2xl flex items-start gap-3">
+              <div className="p-2 bg-emerald-100 text-emerald-600 rounded-xl shrink-0 mt-0.5">
+                <CheckCircle size={20} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="font-bold text-emerald-950 text-sm">{toast.title}</h4>
+                  <button
+                    onClick={() => setToast(null)}
+                    className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                <p className="text-xs text-emerald-800 mt-1 leading-relaxed">{toast.message}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
@@ -1024,16 +1210,22 @@ const LeaveManagement = () => {
                             </button>
                           );
                         })()}
-                        {/* Student Cancel Leave Button */}
+                        {/* Student Cancel Leave Button - only if leave has not started */}
                         {isRegularUser && req.final_status !== 'cancelled' && req.final_status !== 'rejected' && !(Number(req.is_cancellation) === 1 && req.cancellation_status === 'pending') && (
-                          <button
-                            type="button"
-                            onClick={() => handleOpenCancelModal(req)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-lg text-xs font-bold border border-rose-200 transition-colors shrink-0 shadow-2xs"
-                            title="Request cancellation for this leave ticket"
-                          >
-                            <Ban size={13} /> Cancel Leave
-                          </button>
+                          isLeaveStarted(req) ? (
+                            <span className="text-[11px] font-medium text-slate-400 italic bg-slate-50 px-2.5 py-1 rounded-md border border-slate-200" title="Leaves that have already commenced cannot be cancelled">
+                              Leave started · Cannot cancel
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenCancelModal(req)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-lg text-xs font-bold border border-rose-200 transition-colors shrink-0 shadow-2xs"
+                              title="Request cancellation for this leave ticket"
+                            >
+                              <Ban size={13} /> Cancel Leave
+                            </button>
+                          )
                         )}
                       </div>
                     </div>

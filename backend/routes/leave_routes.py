@@ -820,7 +820,14 @@ def create_leave_request():
             o_end = overlap_data.get("end_date") if isinstance(overlap_data, dict) else overlap_row[3]
             o_stat = overlap_data.get("final_status") if isinstance(overlap_data, dict) else overlap_row[4]
             return jsonify({
-                "error": f"You already have a leave request ({o_type}) from {o_start} to {o_end} (Status: {o_stat}). Overlapping leave dates are not permitted."
+                "error": f"You already have a leave request ({o_type}) from {o_start} to {o_end} (Status: {o_stat}). Overlapping leave dates are not permitted.",
+                "error_code": "LEAVE_OVERLAP",
+                "overlap": {
+                    "leave_type": o_type,
+                    "start_date": str(o_start),
+                    "end_date": str(o_end),
+                    "final_status": str(o_stat),
+                }
             }), 409
 
         if is_pg:
@@ -1002,7 +1009,14 @@ def update_leave_request(request_id):
             o_end = overlap_data.get("end_date") if isinstance(overlap_data, dict) else overlap_row[3]
             o_stat = overlap_data.get("final_status") if isinstance(overlap_data, dict) else overlap_row[4]
             return jsonify({
-                "error": f"You already have another leave request ({o_type}) from {o_start} to {o_end} (Status: {o_stat}). Overlapping leave dates are not permitted."
+                "error": f"You already have another leave request ({o_type}) from {o_start} to {o_end} (Status: {o_stat}). Overlapping leave dates are not permitted.",
+                "error_code": "LEAVE_OVERLAP",
+                "overlap": {
+                    "leave_type": o_type,
+                    "start_date": str(o_start),
+                    "end_date": str(o_end),
+                    "final_status": str(o_stat),
+                }
             }), 409
 
         # 5. Execute Update
@@ -2754,6 +2768,28 @@ def cancel_leave_request():
             return jsonify({"error": "Cannot cancel an already rejected leave request"}), 400
         if int(req.get("is_cancellation") or 0) == 1 and req.get("cancellation_status") == "pending":
             return jsonify({"error": "A cancellation request is already pending parent approval"}), 400
+
+        # Validate that the leave has not already started
+        start_date_str = str(req.get("start_date") or "").strip()
+        start_time_str = str(req.get("start_time") or "00:00").strip()
+        if start_date_str:
+            try:
+                from datetime import timezone, timedelta
+                tz_ist = timezone(timedelta(hours=5, minutes=30))
+                now_ist = datetime.now(tz_ist)
+                start_dt = datetime.strptime(f"{start_date_str} {start_time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=tz_ist)
+                if now_ist >= start_dt:
+                    return jsonify({
+                        "error": "Leave cannot be cancelled after it has already started.",
+                        "error_code": "LEAVE_ALREADY_STARTED"
+                    }), 400
+            except Exception:
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                if start_date_str <= today_str:
+                    return jsonify({
+                        "error": "Leave cannot be cancelled after it has already started.",
+                        "error_code": "LEAVE_ALREADY_STARTED"
+                    }), 400
 
         # 3. Update leave_requests with cancellation intent
         if is_pg:

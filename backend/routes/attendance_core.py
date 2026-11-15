@@ -154,7 +154,9 @@ def _person_scope_context(cursor, vendor_id, requested_type=None):
 def get_attendance_filters(valid_data: AttendanceFilterSchema):
     vendor_id = g.vendor_id
     
-    cache_key = f"vendor:{vendor_id}:attendance_filters:{hash(tuple(sorted(request.args.items())))}"
+    caller_role = str(getattr(g, "user_role", "") or "").lower()
+    caller_user = str(getattr(g, "username", "") or "").lower()
+    cache_key = f"vendor:{vendor_id}:role:{caller_role}:user:{caller_user}:attendance_filters:{hash(tuple(sorted(request.args.items())))}"
     cached = cache_get(cache_key)
     if cached: return jsonify(cached)
 
@@ -188,13 +190,48 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
         except Exception:
             logger.debug("Failed to load registration config for vendor %s", vendor_id, exc_info=True)
 
-    c.execute("""SELECT f.id, f.name, f.department, f.designation, f.shift, f.phone,
-                        f.custom_data,
-                        (SELECT su.role FROM system_users su
-                         WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
-                         ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
-                         LIMIT 1) AS system_role
-                 FROM faces f WHERE f.vendor_id = ?""", (vendor_id,))
+    if caller_role in ('user', 'student'):
+        is_pg = getattr(conn, "_is_pg", False)
+        ph = "%s" if is_pg else "?"
+        c.execute(f"SELECT person_id FROM system_users WHERE vendor_id = {ph} AND username = {ph} AND person_id IS NOT NULL", (vendor_id, caller_user))
+        u_row = c.fetchone()
+        scoped_pid = u_row[0] if u_row and u_row[0] else None
+        if not scoped_pid and caller_user:
+            if is_pg:
+                c.execute("""SELECT id FROM faces WHERE vendor_id = %s AND (
+                    id::text = %s OR
+                    LOWER(TRIM(custom_data::jsonb->>'student_id')) = LOWER(TRIM(%s)) OR
+                    LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s)) OR
+                    LOWER(TRIM(custom_data::jsonb->>'employee_id')) = LOWER(TRIM(%s))
+                ) LIMIT 1""", (vendor_id, caller_user, caller_user, caller_user, caller_user))
+            else:
+                c.execute("""SELECT id FROM faces WHERE vendor_id = ? AND (
+                    CAST(id AS TEXT) = ? OR
+                    LOWER(TRIM(json_extract(custom_data, '$.student_id'))) = LOWER(TRIM(?)) OR
+                    LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?)) OR
+                    LOWER(TRIM(json_extract(custom_data, '$.employee_id'))) = LOWER(TRIM(?))
+                ) LIMIT 1""", (vendor_id, caller_user, caller_user, caller_user, caller_user))
+            fc_row = c.fetchone()
+            if fc_row: scoped_pid = fc_row[0]
+
+        if scoped_pid:
+            c.execute(f"""SELECT f.id, f.name, f.department, f.designation, f.shift, f.phone,
+                                f.custom_data,
+                                (SELECT su.role FROM system_users su
+                                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                                 ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                                 LIMIT 1) AS system_role
+                         FROM faces f WHERE f.vendor_id = {ph} AND f.id = {ph}""", (vendor_id, scoped_pid))
+        else:
+            c.execute("SELECT 1 WHERE 1 = 0")
+    else:
+        c.execute("""SELECT f.id, f.name, f.department, f.designation, f.shift, f.phone,
+                            f.custom_data,
+                            (SELECT su.role FROM system_users su
+                             WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                             ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                             LIMIT 1) AS system_role
+                     FROM faces f WHERE f.vendor_id = ?""", (vendor_id,))
     faces = []
     for r in c.fetchall():
         d = dict(r)
@@ -1145,8 +1182,10 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     vendor_id = g.vendor_id
     late_enabled = vendor_has_feature(vendor_id, "late_mark")
     no_cache = request.headers.get("Cache-Control") in ("no-cache", "max-age=0") or request.args.get("nocache") == "1"
+    caller_role = str(getattr(g, "user_role", "") or "").lower()
+    caller_user = str(getattr(g, "username", "") or "").lower()
     cache_params = sorted(request.args.items())
-    cache_key = f"vendor:{vendor_id}:attendance_list:{hash(tuple(cache_params))}"
+    cache_key = f"vendor:{vendor_id}:role:{caller_role}:user:{caller_user}:attendance_list:{hash(tuple(cache_params))}"
     if not no_cache:
         cached = cache_get(cache_key)
         if cached: return jsonify(cached)
@@ -1208,18 +1247,42 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     placeholder = "%s" if is_pg else "?"
     params = [vendor_id]
     if getattr(g, "user_role", None) in ('user', 'student'):
+        uname = str(getattr(g, "username", "") or "").strip()
         c.execute(
-            f"SELECT person_id FROM system_users WHERE vendor_id = {placeholder} AND username = {placeholder}",
-            (vendor_id, getattr(g, "username", ""))
+            f"SELECT person_id FROM system_users WHERE vendor_id = {placeholder} AND username = {placeholder} AND person_id IS NOT NULL",
+            (vendor_id, uname)
         )
         u_row = c.fetchone()
         scoped_pid = u_row[0] if u_row and u_row[0] else None
+        if not scoped_pid and uname:
+            if is_pg:
+                c.execute("""
+                    SELECT id FROM faces 
+                    WHERE vendor_id = %s AND (
+                        id::text = %s OR
+                        LOWER(TRIM(custom_data::jsonb->>'student_id')) = LOWER(TRIM(%s)) OR
+                        LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s)) OR
+                        LOWER(TRIM(custom_data::jsonb->>'employee_id')) = LOWER(TRIM(%s))
+                    ) LIMIT 1
+                """, (vendor_id, uname, uname, uname, uname))
+            else:
+                c.execute("""
+                    SELECT id FROM faces 
+                    WHERE vendor_id = ? AND (
+                        CAST(id AS TEXT) = ? OR
+                        LOWER(TRIM(json_extract(custom_data, '$.student_id'))) = LOWER(TRIM(?)) OR
+                        LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?)) OR
+                        LOWER(TRIM(json_extract(custom_data, '$.employee_id'))) = LOWER(TRIM(?))
+                    ) LIMIT 1
+                """, (vendor_id, uname, uname, uname, uname))
+            fc_row = c.fetchone()
+            if fc_row:
+                scoped_pid = fc_row[0]
         if scoped_pid:
             query += f" AND a.person_id = {placeholder}"
             params.append(scoped_pid)
-        elif getattr(g, "username", None):
-            query += f" AND a.name = {placeholder}"
-            params.append(g.username)
+        else:
+            query += " AND 1 = 0"
     if s_date:
         query += f" AND a.timestamp >= {placeholder}"
         params.append(f"{s_date} 00:00:00")
@@ -1243,7 +1306,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     if valid_data.phone:
         query += f" AND f.phone = {placeholder}"
         params.append(valid_data.phone)
-    if valid_data.person_id is not None:
+    if valid_data.person_id is not None and getattr(g, "user_role", None) not in ('user', 'student'):
         query += f" AND a.person_id = {placeholder}"
         params.append(int(valid_data.person_id))
     query += " ORDER BY a.timestamp DESC"

@@ -148,6 +148,9 @@ const Attendance = () => {
       if (schoolFlow) params.append('person_type', personType);
       if (filters.startDate) params.append('start_date', filters.startDate);
       if (filters.endDate) params.append('end_date', filters.endDate);
+      if (isRegularUser && (user?.person_id || user?.id)) {
+        params.append('person_id', user.person_id || user.id);
+      }
       Object.entries(filterOptions.dynamic_filters || {}).forEach(([key, cfg]) => {
         const val = filters[key];
         if (val && String(val).trim() !== '') {
@@ -371,33 +374,37 @@ const Attendance = () => {
           />
         </div>
 
-        <div className="w-full md:w-52">
-          <select
-            value={filters.deviceName || ''}
-            onChange={(e) => setFilters({ ...filters, deviceName: e.target.value })}
-            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-          >
-            <option value="">All Devices</option>
-            {deviceOptions.map(opt => (
-              <option key={opt} value={opt}>{opt}</option>
-            ))}
-          </select>
-        </div>
+        {!isRegularUser && (
+          <>
+            <div className="w-full md:w-52">
+              <select
+                value={filters.deviceName || ''}
+                onChange={(e) => setFilters({ ...filters, deviceName: e.target.value })}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              >
+                <option value="">All Devices</option>
+                {deviceOptions.map(opt => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            </div>
 
-        {Object.entries(filterOptions.dynamic_filters || {}).map(([key, cfg]) => (
-          <div key={key} className="w-full md:w-44">
-            <select
-              value={filters[key] || ''}
-              onChange={(e) => setFilters({ ...filters, [key]: e.target.value })}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            >
-              <option value="">{`All ${cfg?.label || key}`}</option>
-              {(cfg?.options || []).map(opt => (
-                <option key={opt} value={opt}>{cfg?.option_labels?.[opt] || opt}</option>
-              ))}
-            </select>
-          </div>
-        ))}
+            {Object.entries(filterOptions.dynamic_filters || {}).map(([key, cfg]) => (
+              <div key={key} className="w-full md:w-44">
+                <select
+                  value={filters[key] || ''}
+                  onChange={(e) => setFilters({ ...filters, [key]: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                >
+                  <option value="">{`All ${cfg?.label || key}`}</option>
+                  {(cfg?.options || []).map(opt => (
+                    <option key={opt} value={opt}>{cfg?.option_labels?.[opt] || opt}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </>
+        )}
 
         <button
           onClick={handleSearch}
