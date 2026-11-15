@@ -9,31 +9,98 @@ import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
 
 const EMPTY = { buildings: [], residents: [], history: [], summary: {}, permissions: {} };
+
+const getBedVisual = (bed) => {
+  if (!bed) {
+    return {
+      card: 'border-slate-300 bg-slate-100 text-slate-700',
+      badge: 'bg-slate-200 text-slate-700 border-slate-300',
+      dot: 'bg-slate-400',
+      label: 'Unknown',
+      presence: 'unknown',
+    };
+  }
+  if (bed.status === 'occupied') {
+    const isOutside = bed.presence_status === 'outside' || bed.resident?.presence_status === 'outside';
+    if (isOutside) {
+      return {
+        card: 'border-rose-400 bg-rose-50/90 text-rose-950 hover:border-rose-500 shadow-sm ring-1 ring-rose-200/60',
+        badge: 'bg-rose-100 text-rose-800 border-rose-300',
+        dot: 'bg-rose-500',
+        label: 'Outside',
+        presence: 'outside',
+      };
+    }
+    return {
+      card: 'border-emerald-400 bg-emerald-50/90 text-emerald-950 hover:border-emerald-500 shadow-sm ring-1 ring-emerald-200/60',
+      badge: 'bg-emerald-100 text-emerald-800 border-emerald-300',
+      dot: 'bg-emerald-500',
+      label: 'Inside',
+      presence: 'inside',
+    };
+  }
+  if (bed.status === 'available') {
+    return {
+      card: 'border-blue-300 bg-blue-50/80 text-blue-900 hover:border-blue-400 hover:bg-blue-100/60 shadow-sm ring-1 ring-blue-200/50',
+      badge: 'bg-blue-100 text-blue-800 border-blue-200',
+      dot: 'bg-blue-500',
+      label: 'Vacant',
+      presence: 'vacant',
+    };
+  }
+  if (bed.status === 'reserved') {
+    return {
+      card: 'border-amber-300 bg-amber-50 text-amber-900 hover:border-amber-400 shadow-sm',
+      badge: 'bg-amber-100 text-amber-800 border-amber-300',
+      dot: 'bg-amber-500',
+      label: 'Reserved',
+      presence: 'reserved',
+    };
+  }
+  return {
+    card: 'border-slate-300 bg-slate-100 text-slate-700 hover:border-slate-400 shadow-sm',
+    badge: 'bg-slate-200 text-slate-700 border-slate-300',
+    dot: 'bg-slate-400',
+    label: 'Unavailable',
+    presence: 'unavailable',
+  };
+};
+
 const STATUS_STYLE = {
-  available: 'border-emerald-300 bg-emerald-50 text-emerald-800',
-  occupied: 'border-blue-300 bg-blue-50 text-blue-800',
-  reserved: 'border-amber-300 bg-amber-50 text-amber-800',
-  unavailable: 'border-slate-300 bg-slate-100 text-slate-600',
+  available: 'border-blue-300 bg-blue-50 text-blue-900',
+  occupied: 'border-emerald-400 bg-emerald-50 text-emerald-900',
+  reserved: 'border-amber-300 bg-amber-50 text-amber-900',
+  unavailable: 'border-slate-300 bg-slate-100 text-slate-700',
 };
 
 const initials = (name) => String(name || '?').split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase();
-const availableBedLabel = (count) => `${count} ${count === 1 ? 'bed' : 'beds'} available`;
+const availableBedLabel = (count) => `${count} ${count === 1 ? 'bed' : 'beds'} vacant`;
 const apiError = (error) => error.response?.data?.error || error.message || 'Request failed';
 const ruleText = (rules = {}) => Object.entries(rules).filter(([, value]) => value && (!Array.isArray(value) || value.length)).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${Array.isArray(value) ? value.join(', ') : value}`).join(' · ');
 const roomMatchesFilter = (room, filter) => filter === 'all' ||
-  (filter === 'available' && room.summary.available > 0) ||
-  (filter === 'partial' && room.summary.occupied > 0 && room.summary.available > 0) ||
-  (filter === 'full' && room.summary.total > 0 && room.summary.occupied === room.summary.total) ||
-  (filter === 'unavailable' && room.summary.unavailable > 0);
+  (filter === 'available' && (room.summary?.available || 0) > 0) ||
+  (filter === 'inside' && (room.summary?.inside || 0) > 0) ||
+  (filter === 'outside' && (room.summary?.outside || 0) > 0) ||
+  (filter === 'partial' && (room.summary?.occupied || 0) > 0 && (room.summary?.available || 0) > 0) ||
+  (filter === 'full' && (room.summary?.total || 0) > 0 && (room.summary?.occupied || 0) === room.summary?.total) ||
+  (filter === 'unavailable' && (room.summary?.unavailable || 0) > 0);
 
 function Summary({ value = {}, compact = false }) {
   return (
-    <div className={`grid gap-3 ${compact ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3 xl:grid-cols-5'}`} aria-label="Occupancy summary">
+    <div className={`grid gap-3 ${compact ? 'grid-cols-2 sm:grid-cols-3' : 'grid-cols-2 sm:grid-cols-3 xl:grid-cols-6'}`} aria-label="Occupancy summary">
       {[
-        ['Total beds', value.total || 0, 'text-slate-800'], ['Occupied', value.occupied || 0, 'text-blue-700'],
-        ['Available', value.available || 0, 'text-emerald-700'], ['Reserved', value.reserved || 0, 'text-amber-700'],
-        ['Unavailable', value.unavailable || 0, 'text-slate-600'],
-      ].map(([label, count, color]) => <div key={label} className="min-w-0 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"><div className={`text-2xl font-extrabold ${color}`}>{count}</div><div className="mt-0.5 whitespace-normal text-[10px] font-semibold uppercase leading-tight tracking-wide text-slate-500">{label}</div></div>)}
+        ['Total beds', value.total || 0, 'text-slate-800', 'bg-white border-slate-200'],
+        ['Present in Hostel', value.inside || 0, 'text-emerald-700', 'bg-emerald-50/70 border-emerald-300 ring-1 ring-emerald-200/50'],
+        ['Outside Hostel', value.outside || 0, 'text-rose-700', 'bg-rose-50/70 border-rose-300 ring-1 ring-rose-200/50'],
+        ['Vacant Beds', value.available || 0, 'text-blue-700', 'bg-blue-50/70 border-blue-300 ring-1 ring-blue-200/50'],
+        ['Occupied Total', value.occupied || 0, 'text-indigo-700', 'bg-indigo-50/30 border-indigo-200'],
+        ['Reserved / Out of Order', (value.reserved || 0) + (value.unavailable || 0), 'text-amber-700', 'bg-amber-50/30 border-amber-200'],
+      ].map(([label, count, color, bgStyle]) => (
+        <div key={label} className={`min-w-0 rounded-2xl border px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${bgStyle}`}>
+          <div className={`text-2xl font-extrabold ${color}`}>{count}</div>
+          <div className="mt-0.5 whitespace-normal text-[10px] font-semibold uppercase leading-tight tracking-wide text-slate-500">{label}</div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -284,11 +351,35 @@ export default function HostelAllocation() {
     {lastChange && <div className="flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"><span>{lastChange.message}</span>{data.permissions.can_allocate && <button disabled={busy} onClick={undoLastChange} className="rounded-lg border border-emerald-300 bg-white px-3 py-1.5 font-semibold"><Undo2 size={14} className="mr-1 inline" />Undo</button>}</div>}
     <Summary value={building?.summary || data.summary} />
 
+    <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white/95 px-4 py-2.5 shadow-sm text-xs">
+      <span className="font-bold text-slate-700 mr-1">Bed Status:</span>
+      <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-800">
+        <span className="h-3 w-3 rounded-full bg-emerald-500 ring-2 ring-emerald-200" />
+        <span>Present in Hostel (Green)</span>
+      </span>
+      <span className="inline-flex items-center gap-1.5 font-semibold text-rose-800">
+        <span className="h-3 w-3 rounded-full bg-rose-500 ring-2 ring-rose-200" />
+        <span>Outside Hostel (Red)</span>
+      </span>
+      <span className="inline-flex items-center gap-1.5 font-semibold text-blue-800">
+        <span className="h-3 w-3 rounded-full bg-blue-500 ring-2 ring-blue-200" />
+        <span>Vacant Bed (Blue)</span>
+      </span>
+      <span className="inline-flex items-center gap-1.5 font-medium text-amber-800">
+        <span className="h-3 w-3 rounded-full bg-amber-400 ring-2 ring-amber-200" />
+        <span>Reserved</span>
+      </span>
+      <span className="inline-flex items-center gap-1.5 font-medium text-slate-600">
+        <span className="h-3 w-3 rounded-full bg-slate-400 ring-2 ring-slate-200" />
+        <span>Out of Order</span>
+      </span>
+    </div>
+
     <div className="grid min-h-[650px] grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(440px,1fr)_360px]">
       <aside className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm xl:sticky xl:top-4 xl:self-start">
         <div className="mb-4 flex items-center justify-between"><h2 className="font-bold">Buildings</h2>{data.permissions.can_manage_buildings && <button onClick={createBuilding} aria-label="Create building" className="rounded-lg bg-indigo-50 p-2 text-indigo-700"><Plus size={16} /></button>}</div>
         <select className="mb-3 w-full rounded-lg border p-2 text-sm" value={buildingId} onChange={e => setBuildingId(e.target.value)}><option value="">Select building</option>{data.buildings.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-        {building && <div className="mb-5 space-y-1">{building.floors.map(floor => <button key={floor.id} onClick={() => document.getElementById(`floor-${floor.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-left text-sm hover:bg-slate-50"><span>{floor.name}</span><span className="text-xs text-slate-400">{floor.summary.available} free</span></button>)}</div>}
+        {building && <div className="mb-5 space-y-1">{building.floors.map(floor => <button key={floor.id} onClick={() => document.getElementById(`floor-${floor.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-left text-sm hover:bg-slate-50"><span>{floor.name}</span><span className="text-xs text-slate-400">{floor.summary.available} vacant</span></button>)}</div>}
         <div className="border-t pt-4"><label className="text-xs font-semibold uppercase text-slate-500">{search ? 'Resident search results' : 'Pending allocation'}</label><div className="relative my-2"><Search className="absolute left-2.5 top-2.5 text-slate-400" size={15} /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Resident, ID, building or room" className="w-full rounded-lg border py-2 pl-8 pr-2 text-sm" /></div>
           <div className="max-h-[390px] space-y-2 overflow-y-auto">{visibleResidents.map(resident => <button key={resident.id} draggable={data.permissions.can_allocate} onDragStart={e => { e.dataTransfer.setData('residentId', String(resident.id)); setSelectedResidentId(resident.id); }} onClick={() => locateResident(resident)} className={`flex w-full items-center gap-2 rounded-xl border p-2 text-left hover:border-indigo-300 ${selectedResidentId === resident.id ? 'border-indigo-500 bg-indigo-50' : ''}`}><span className="grid h-8 w-8 place-items-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">{initials(resident.name)}</span><span className="min-w-0"><span className="block truncate text-sm font-medium">{resident.name}</span><span className="block text-xs text-slate-500">ID {resident.resident_id}{resident.allocation ? ' · Allocated' : ''}</span></span>{data.permissions.can_allocate && <GripVertical className="ml-auto text-slate-300" size={14} />}</button>)}{!visibleResidents.length && <p className="py-6 text-center text-xs text-slate-400">No matching residents</p>}</div>
         </div>
@@ -298,18 +389,66 @@ export default function HostelAllocation() {
         {!building ? <div className="grid h-full min-h-[500px] place-items-center text-center"><div><span className="mx-auto mb-4 grid h-20 w-20 place-items-center rounded-3xl bg-indigo-100 text-indigo-500"><Building2 size={42} /></span><h2 className="text-xl font-bold">{data.permissions.can_manage_buildings ? 'Create your first hostel building' : 'No assigned hostel buildings'}</h2><p className="mb-5 mt-1 text-sm text-slate-500">Building → Floors → Rooms → Beds</p>{data.permissions.can_manage_buildings && <button disabled={busy} onClick={createBuilding} className="rounded-xl bg-indigo-600 px-5 py-2.5 font-semibold text-white shadow-md shadow-indigo-200">Create Building</button>}</div></div> : <>
           <div className="sticky left-0 mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/90 p-3 shadow-sm backdrop-blur"><div><h2 className="text-xl font-bold">{building.name}</h2><p className="text-xs text-slate-500">{mode === 'layout' ? 'Layout Editing — drag rooms to rearrange' : 'Resident Allocation — drag or select a resident, then choose a bed'}</p></div><div className="flex flex-wrap gap-2">{data.permissions.can_edit_layout && <button disabled={busy} onClick={() => setModal({ type: 'floor', name: '' })} className="rounded-lg border bg-white px-3 py-2 text-sm font-semibold"><Plus size={14} className="inline" /> Floor</button>}{data.permissions.can_manage_eligibility && <button disabled={busy} onClick={() => editEntityEligibility(building, `/hostel-management/buildings/${building.id}`, building.name)} className="rounded-lg border bg-white px-3 py-2 text-sm font-semibold">Building rules</button>}{data.permissions.can_manage_permissions && <button disabled={busy} onClick={managePermission} className="rounded-lg border bg-white px-3 py-2 text-sm font-semibold">Staff access</button>}{mode === 'layout' && data.permissions.can_manage_buildings && <button disabled={busy} onClick={deleteBuilding} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700"><Trash2 size={14} className="mr-1 inline" />Delete building</button>}<button disabled={busy} onClick={() => setZoom(value => Math.max(.7, value - .1))} className="rounded-lg border bg-white p-2" aria-label="Zoom out"><Minus size={15} /></button><button disabled={busy} onClick={() => setZoom(1)} className="rounded-lg border bg-white p-2" aria-label="Fit to screen"><Maximize2 size={15} /></button><button disabled={busy} onClick={() => setZoom(value => Math.min(1.4, value + .1))} className="rounded-lg border bg-white p-2" aria-label="Zoom in"><Plus size={15} /></button></div></div>
           <div className="origin-top-left space-y-4" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%` }}>{building.floors.map(floor => <section id={`floor-${floor.id}`} key={floor.id} className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="flex flex-wrap items-center gap-3 border-b p-3"><button onClick={() => setCollapsed(current => { const next = new Set(current); next.has(floor.id) ? next.delete(floor.id) : next.add(floor.id); return next; })} aria-expanded={!collapsed.has(floor.id)} className="flex items-center gap-2 font-bold">{collapsed.has(floor.id) ? <ChevronRight size={17} /> : <ChevronDown size={17} />}{floor.name}</button><span className="text-xs text-slate-500">{floor.summary.occupied}/{floor.summary.total} occupied · {floor.summary.available} available for allocation</span>{mode === 'layout' && <div className="ml-auto flex flex-wrap gap-2"><button onClick={() => setModal({ type: 'rooms', floorId: floor.id, count: 10, start_number: 1, prefix: '', capacity: 3, room_type: 'Standard' })} className="rounded-lg bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700">+ Add rooms</button>{data.permissions.can_manage_eligibility && <button onClick={() => editEntityEligibility(floor, `/hostel-management/floors/${floor.id}`, floor.name)} className="rounded-lg border px-3 py-1.5 text-xs">Floor rules</button>}<button onClick={() => setModal({ type: 'duplicateFloor', floor, name: `Copy of ${floor.name}` })} className="rounded-lg border px-3 py-1.5 text-xs"><Copy size={13} className="inline" /> Duplicate layout</button><button onClick={() => setModal({ type: 'delete', kind: 'floor', entity: floor, title: `Delete ${floor.name}?`, message: 'This floor, its vacant rooms, and available beds will be permanently deleted. Move all allocated residents first.' })} className="rounded-lg border border-red-200 px-2 py-1.5 text-xs text-red-600" aria-label={`Delete ${floor.name}`}><Trash2 size={13} /></button></div>}</div>
-            {!collapsed.has(floor.id) && <div className="grid grid-cols-1 gap-3 p-3 md:grid-cols-2 2xl:grid-cols-3">{floor.rooms.filter(room => roomMatchesFilter(room, roomFilter) && (!search.trim() || `${building.name} ${floor.name} ${room.room_number} ${room.beds.map(bed => `${bed.resident?.name || ''} ${bed.resident?.resident_id || ''}`).join(' ')}`.toLowerCase().includes(search.toLowerCase()))).map(room => <article key={room.id} draggable={mode === 'layout'} onDragStart={() => setDraggedRoom({ roomId: room.id, floorId: floor.id })} onDragOver={e => { if (mode === 'layout' || (mode === 'allocation' && room.summary.available)) e.preventDefault(); }} onDrop={e => { e.preventDefault(); if (mode === 'layout') dropRoom(floor, room.id); else beginRoomAssignment(e.dataTransfer.getData('residentId'), { ...room, floor, building }); }} onClick={() => { setSelectedResidentId(null); setSelectedBedId(null); setSelectedRoomId(room.id); }} className={`rounded-xl border-2 bg-white p-3 transition ${selectedRoomId === room.id ? 'border-indigo-500 shadow-md' : room.summary.available ? 'border-emerald-200' : room.summary.unavailable === room.summary.total ? 'border-slate-300' : 'border-blue-200'}`}>
-                <div className="mb-2 flex items-start justify-between gap-2"><div className="min-w-0"><h3 className="truncate font-bold" title={`Room ${room.room_number}`}>Room {room.room_number}</h3><p className="text-xs leading-relaxed text-slate-500">{room.room_type} · {room.summary.occupied}/{room.summary.total} occupied · {availableBedLabel(room.summary.available)}</p></div>{mode === 'layout' && <GripVertical className="shrink-0 text-slate-400" size={18} />}</div>
+            <div className="flex flex-wrap items-center gap-3 border-b p-3"><button onClick={() => setCollapsed(current => { const next = new Set(current); next.has(floor.id) ? next.delete(floor.id) : next.add(floor.id); return next; })} aria-expanded={!collapsed.has(floor.id)} className="flex items-center gap-2 font-bold">{collapsed.has(floor.id) ? <ChevronRight size={17} /> : <ChevronDown size={17} />}{floor.name}</button><span className="text-xs text-slate-500">{floor.summary.occupied}/{floor.summary.total} occupied ({floor.summary.inside || 0} inside, {floor.summary.outside || 0} outside) · {floor.summary.available} vacant</span>{mode === 'layout' && <div className="ml-auto flex flex-wrap gap-2"><button onClick={() => setModal({ type: 'rooms', floorId: floor.id, count: 10, start_number: 1, prefix: '', capacity: 3, room_type: 'Standard' })} className="rounded-lg bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700">+ Add rooms</button>{data.permissions.can_manage_eligibility && <button onClick={() => editEntityEligibility(floor, `/hostel-management/floors/${floor.id}`, floor.name)} className="rounded-lg border px-3 py-1.5 text-xs">Floor rules</button>}<button onClick={() => setModal({ type: 'duplicateFloor', floor, name: `Copy of ${floor.name}` })} className="rounded-lg border px-3 py-1.5 text-xs"><Copy size={13} className="inline" /> Duplicate layout</button><button onClick={() => setModal({ type: 'delete', kind: 'floor', entity: floor, title: `Delete ${floor.name}?`, message: 'This floor, its vacant rooms, and available beds will be permanently deleted. Move all allocated residents first.' })} className="rounded-lg border border-red-200 px-2 py-1.5 text-xs text-red-600" aria-label={`Delete ${floor.name}`}><Trash2 size={13} /></button></div>}</div>
+            {!collapsed.has(floor.id) && <div className="grid grid-cols-1 gap-3 p-3 md:grid-cols-2 2xl:grid-cols-3">{floor.rooms.filter(room => roomMatchesFilter(room, roomFilter) && (!search.trim() || `${building.name} ${floor.name} ${room.room_number} ${room.beds.map(bed => `${bed.resident?.name || ''} ${bed.resident?.resident_id || ''}`).join(' ')}`.toLowerCase().includes(search.toLowerCase()))).map(room => <article key={room.id} draggable={mode === 'layout'} onDragStart={() => setDraggedRoom({ roomId: room.id, floorId: floor.id })} onDragOver={e => { if (mode === 'layout' || (mode === 'allocation' && room.summary.available)) e.preventDefault(); }} onDrop={e => { e.preventDefault(); if (mode === 'layout') dropRoom(floor, room.id); else beginRoomAssignment(e.dataTransfer.getData('residentId'), { ...room, floor, building }); }} onClick={() => { setSelectedResidentId(null); setSelectedBedId(null); setSelectedRoomId(room.id); }} className={`rounded-xl border-2 bg-white p-3 transition ${selectedRoomId === room.id ? 'border-indigo-500 shadow-md' : (room.summary.available > 0) ? 'border-blue-200' : room.summary.unavailable === room.summary.total ? 'border-slate-300' : 'border-slate-200'}`}>
+                <div className="mb-2 flex items-start justify-between gap-2"><div className="min-w-0"><h3 className="truncate font-bold" title={`Room ${room.room_number}`}>Room {room.room_number}</h3><p className="text-xs leading-relaxed text-slate-500">{room.room_type} · {room.summary.occupied}/{room.summary.total} occupied ({room.summary.inside || 0} inside, {room.summary.outside || 0} outside) · {availableBedLabel(room.summary.available)}</p></div>{mode === 'layout' && <GripVertical className="shrink-0 text-slate-400" size={18} />}</div>
                 {ruleText(room.effective_eligibility) && <div className="mb-2 rounded-lg bg-violet-50 px-2 py-1 text-[10px] text-violet-700"><ShieldAlert size={11} className="mr-1 inline" />{ruleText(room.effective_eligibility)}</div>}
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{room.beds.map(bed => <button key={bed.id} onClick={event => { event.stopPropagation(); setSelectedRoomId(room.id); setSelectedBedId(bed.id); if (mode === 'allocation' && selectedResidentId && bed.status === 'available') beginAssignment(selectedResidentId, { ...bed, room }); else if (bed.resident) locateResident(data.residents.find(item => item.id === bed.resident.id) || bed.resident); else setSelectedResidentId(null); }} onDragOver={event => { if (mode === 'allocation' && bed.status === 'available') event.preventDefault(); }} onDrop={event => { event.preventDefault(); event.stopPropagation(); beginAssignment(event.dataTransfer.getData('residentId'), { ...bed, room }); }} className={`min-h-16 rounded-lg border p-2 text-left text-xs focus:ring-2 focus:ring-indigo-500 ${STATUS_STYLE[bed.status]}`} aria-label={`Room ${room.room_number}, ${bed.bed_label}, ${bed.status}${bed.resident ? `, occupied by ${bed.resident.name}` : ''}`}><span className="flex items-center gap-1 font-semibold"><BedDouble className="shrink-0" size={13} /><span className="truncate" title={bed.bed_label}>{bed.bed_label}</span></span>{bed.resident ? <span className="mt-1 block truncate" title={bed.resident.name}>{bed.resident.name}</span> : <span className="mt-1 block capitalize">{bed.status === 'available' ? 'Available' : bed.status}</span>}</button>)}</div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{room.beds.map(bed => {
+                  const visual = getBedVisual(bed);
+                  return (
+                    <button
+                      key={bed.id}
+                      onClick={event => {
+                        event.stopPropagation();
+                        setSelectedRoomId(room.id);
+                        setSelectedBedId(bed.id);
+                        if (mode === 'allocation' && selectedResidentId && bed.status === 'available') {
+                          beginAssignment(selectedResidentId, { ...bed, room });
+                        } else if (bed.resident) {
+                          locateResident(data.residents.find(item => item.id === bed.resident.id) || bed.resident);
+                        } else {
+                          setSelectedResidentId(null);
+                        }
+                      }}
+                      onDragOver={event => {
+                        if (mode === 'allocation' && bed.status === 'available') event.preventDefault();
+                      }}
+                      onDrop={event => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        beginAssignment(event.dataTransfer.getData('residentId'), { ...bed, room });
+                      }}
+                      className={`min-h-[70px] rounded-xl border p-2.5 text-left text-xs transition-all focus:ring-2 focus:ring-indigo-500 ${visual.card}`}
+                      aria-label={`Room ${room.room_number}, ${bed.bed_label}, ${bed.status}${bed.resident ? `, occupied by ${bed.resident.name} (${visual.label})` : ''}`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="flex items-center gap-1.5 font-bold">
+                          <BedDouble className="shrink-0" size={14} />
+                          <span className="truncate" title={bed.bed_label}>{bed.bed_label}</span>
+                        </span>
+                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${visual.badge}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${visual.dot}`} />
+                          {visual.label}
+                        </span>
+                      </div>
+                      {bed.resident ? (
+                        <div className="mt-1.5 min-w-0">
+                          <span className="block truncate font-semibold leading-tight text-slate-900" title={bed.resident.name}>{bed.resident.name}</span>
+                          <span className="block text-[10px] opacity-75 truncate">ID: {bed.resident.resident_id}</span>
+                        </div>
+                      ) : (
+                        <span className="mt-2 block text-[11px] font-medium opacity-75">{bed.status === 'available' ? 'Vacant bed' : bed.status}</span>
+                      )}
+                    </button>
+                  );
+                })}</div>
               </article>)}{!floor.rooms.some(room => roomMatchesFilter(room, roomFilter) && (!search.trim() || `${building.name} ${floor.name} ${room.room_number} ${room.beds.map(bed => `${bed.resident?.name || ''} ${bed.resident?.resident_id || ''}`).join(' ')}`.toLowerCase().includes(search.toLowerCase()))) && <div className="col-span-full rounded-xl border border-dashed p-8 text-center text-sm text-slate-400">{floor.rooms.length ? 'No rooms match the current search and filter.' : 'No rooms yet. Use “Add rooms” in Layout Editing mode.'}</div>}</div>}
           </section>)}</div>
         </>}
       </main>
 
       <aside className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm xl:sticky xl:top-4 xl:self-start">
-        <div className="mb-4"><label className="text-xs font-semibold uppercase text-slate-500">Room filter</label><select value={roomFilter} onChange={e => setRoomFilter(e.target.value)} className="mt-1 w-full rounded-lg border p-2 text-sm"><option value="all">All rooms</option><option value="available">Rooms with available beds</option><option value="partial">Partially occupied rooms</option><option value="full">Full rooms</option><option value="unavailable">Rooms with unavailable beds</option></select></div>
+        <div className="mb-4"><label className="text-xs font-semibold uppercase text-slate-500">Room filter</label><select value={roomFilter} onChange={e => setRoomFilter(e.target.value)} className="mt-1 w-full rounded-lg border p-2 text-sm"><option value="all">All rooms</option><option value="inside">Rooms with students inside (Green)</option><option value="outside">Rooms with students outside (Red)</option><option value="available">Rooms with vacant beds (Blue)</option><option value="partial">Partially occupied rooms</option><option value="full">Full rooms</option><option value="unavailable">Rooms with unavailable beds</option></select></div>
         {selectedResident ? (
           <div className="space-y-3">
             <div className="flex items-center gap-3"><span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-indigo-100 font-bold text-indigo-700">{initials(selectedResident.name)}</span><div className="min-w-0"><h3 className="break-words font-bold leading-snug" title={selectedResident.name}>{selectedResident.name}</h3><p className="break-all text-xs text-slate-500">Resident ID: {selectedResident.resident_id}</p></div></div>
@@ -321,7 +460,42 @@ export default function HostelAllocation() {
             <div><h3 className="text-lg font-bold">Room {selectedRoom.room_number}</h3><p className="text-sm text-slate-500">{selectedRoom.room_type}</p></div>
             <Summary value={selectedRoom.summary} compact />
             <p className="text-xs text-violet-700">{ruleText(selectedRoom.effective_eligibility) || 'No eligibility restrictions'}</p>
-            {selectedBed && <div className={`rounded-xl border p-3 text-xs ${STATUS_STYLE[selectedBed.status]}`}><div className="flex min-w-0 items-center justify-between gap-2"><strong className="truncate" title={selectedBed.bed_label}>{selectedBed.bed_label}</strong><span className="shrink-0 rounded-full bg-white/70 px-2 py-0.5 font-semibold capitalize">{selectedBed.status}</span></div>{selectedBed.unavailable_reason && <div className="mt-2">Reason: {selectedBed.unavailable_reason.replaceAll('_', ' ')}</div>}{selectedBed.unavailable_note && <div>Note: {selectedBed.unavailable_note}</div>}{selectedBed.unavailable_from && <div>Unavailable from: {String(selectedBed.unavailable_from)}</div>}{selectedBed.expected_reopening_date && <div>Expected reopening (review required): {String(selectedBed.expected_reopening_date)}</div>}{selectedBed.reservation_expires_at && <div>Reservation expires: {String(selectedBed.reservation_expires_at)}</div>}</div>}
+            {selectedBed && (() => {
+              const visual = getBedVisual(selectedBed);
+              const mov = selectedBed.last_movement || selectedBed.resident?.last_movement;
+              return (
+                <div className={`rounded-xl border p-3.5 text-xs ${visual.card}`}>
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <strong className="text-sm font-bold truncate" title={selectedBed.bed_label}>{selectedBed.bed_label}</strong>
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${visual.badge}`}>
+                      <span className={`h-1.5 w-1.5 rounded-full ${visual.dot}`} />
+                      {visual.label}
+                    </span>
+                  </div>
+                  {selectedBed.resident && (
+                    <div className="mt-2.5 pt-2 border-t border-black/10 space-y-1">
+                      <div className="font-bold text-sm text-slate-900">{selectedBed.resident.name}</div>
+                      <div className="text-[11px] opacity-80">Resident ID: {selectedBed.resident.resident_id}</div>
+                      {mov?.on_leave && (
+                        <div className="mt-1 text-[11px] font-medium text-rose-800 bg-rose-100 rounded px-2 py-1 border border-rose-200">
+                          On Approved Leave {mov.leave_info?.leave_type ? `(${mov.leave_info.leave_type})` : ''}: {mov.leave_info?.reason || ''}
+                        </div>
+                      )}
+                      {mov?.last_status && (
+                        <div className="text-[11px] opacity-80">
+                          Last Movement: <span className="font-semibold">{mov.last_status === 'CHECK_IN' ? 'Check In (Entry)' : 'Check Out (Exit)'}</span> {mov.last_timestamp ? `at ${mov.last_timestamp}` : ''}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {selectedBed.unavailable_reason && <div className="mt-2">Reason: {selectedBed.unavailable_reason.replaceAll('_', ' ')}</div>}
+                  {selectedBed.unavailable_note && <div>Note: {selectedBed.unavailable_note}</div>}
+                  {selectedBed.unavailable_from && <div>Unavailable from: {String(selectedBed.unavailable_from)}</div>}
+                  {selectedBed.expected_reopening_date && <div>Expected reopening (review required): {String(selectedBed.expected_reopening_date)}</div>}
+                  {selectedBed.reservation_expires_at && <div>Reservation expires: {String(selectedBed.reservation_expires_at)}</div>}
+                </div>
+              );
+            })()}
             {mode === 'layout' && data.permissions.can_edit_layout && <div className="space-y-2">
               <button onClick={() => addBed(selectedRoom)} className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-sm text-white"><Plus size={14} className="inline" /> Add custom bed</button>
               <button onClick={() => editRoom(selectedRoom)} className="w-full rounded-lg bg-indigo-600 px-3 py-2 text-sm text-white">Edit room and capacity</button>
@@ -347,7 +521,7 @@ export default function HostelAllocation() {
     {modal?.type === 'staffAccess' && <Modal title={`Staff access · ${building?.name}`} onClose={() => setModal(null)}><form onSubmit={saveStaffAccess} className="space-y-4"><p className="text-sm text-slate-500">Choose the staff member and exactly what they can do in this building.</p><label className="block text-sm font-medium">Staff member<select required value={modal.staff_id} onChange={e => { const staffId = e.target.value; setModal({ ...modal, staff_id: staffId, ...staffAccessValues(modal.permissions, staffId) }); }} className="mt-1 w-full rounded-xl border p-2.5">{modal.staff.map(item => <option key={item.id} value={item.id}>{item.name} · {item.role}{item.department ? ` · ${item.department}` : ''}</option>)}</select></label><label className="block text-sm font-medium">Access level<select value={modal.role} onChange={e => setModal({ ...modal, role: e.target.value })} className="mt-1 w-full rounded-xl border p-2.5"><option value="warden">Warden — edit layout and allocations</option><option value="viewer">Viewer — read only</option></select></label><div className="space-y-2">{[['can_export', 'Allow CSV exports'], ['can_override_eligibility', 'Allow eligibility overrides'], ['can_view_resident_details', 'Allow full resident details']].map(([key, label]) => <label key={key} className="flex items-center justify-between rounded-xl border p-3 text-sm font-medium"><span>{label}</span><input type="checkbox" checked={modal[key]} onChange={e => setModal({ ...modal, [key]: e.target.checked })} className="h-4 w-4" /></label>)}</div><div className="flex gap-2"><button type="button" onClick={() => setModal(null)} className="flex-1 rounded-xl border px-4 py-2.5 font-semibold">Cancel</button><button disabled={busy} className="flex-1 rounded-xl bg-indigo-600 px-4 py-2.5 font-semibold text-white">Save access</button></div></form></Modal>}
     {modal?.type === 'duplicateFloor' && <Modal title={`Duplicate ${modal.floor.name}`} onClose={() => setModal(null)}><form onSubmit={saveDuplicateFloor} className="space-y-4"><p className="rounded-xl bg-blue-50 p-3 text-sm text-blue-800">Rooms and bed configuration will be copied. Resident assignments will not be copied.</p><label className="block text-sm font-medium">New floor name<input autoFocus required value={modal.name} onChange={e => setModal({ ...modal, name: e.target.value })} className="mt-1 w-full rounded-xl border p-2.5" /></label><div className="flex gap-2"><button type="button" onClick={() => setModal(null)} className="flex-1 rounded-xl border px-4 py-2.5 font-semibold">Cancel</button><button disabled={busy} className="flex-1 rounded-xl bg-indigo-600 px-4 py-2.5 font-semibold text-white">Duplicate floor</button></div></form></Modal>}
     {modal?.type === 'delete' && <Modal title={modal.title} onClose={() => setModal(null)}><form onSubmit={confirmDelete} className="space-y-4"><div className="flex gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-red-800"><AlertTriangle className="shrink-0" size={22} /><div><strong className="block">This is a permanent action</strong><p className="mt-1 text-sm">{modal.message}</p></div></div><div className="flex gap-2"><button type="button" onClick={() => setModal(null)} className="flex-1 rounded-xl border px-4 py-2.5 font-semibold">Keep it</button><button disabled={busy} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 font-semibold text-white"><Trash2 size={16} />Delete permanently</button></div></form></Modal>}
-    {modal?.type === 'bedSelect' && <Modal title={`Choose a bed in Room ${modal.room.room_number}`} onClose={() => setModal(null)}><p className="mb-3 text-sm text-slate-600">Choose an available destination for <strong>{modal.resident.name}</strong>.</p><div className="grid grid-cols-2 gap-2">{modal.beds.map(bed => <button key={bed.id} onClick={() => beginAssignment(modal.resident.id, { ...bed, room: modal.room })} className="rounded-xl border border-emerald-300 bg-emerald-50 p-3 text-left text-sm font-semibold text-emerald-800"><BedDouble size={15} className="mr-1 inline" />{bed.bed_label}<span className="block text-xs font-normal">Available</span></button>)}</div></Modal>}
+    {modal?.type === 'bedSelect' && <Modal title={`Choose a bed in Room ${modal.room.room_number}`} onClose={() => setModal(null)}><p className="mb-3 text-sm text-slate-600">Choose an available destination for <strong>{modal.resident.name}</strong>.</p><div className="grid grid-cols-2 gap-2">{modal.beds.map(bed => <button key={bed.id} onClick={() => beginAssignment(modal.resident.id, { ...bed, room: modal.room })} className="rounded-xl border border-blue-300 bg-blue-50/90 p-3 text-left text-sm font-semibold text-blue-900 hover:border-blue-400 hover:bg-blue-100 transition shadow-sm"><BedDouble size={15} className="mr-1 inline text-blue-700" />{bed.bed_label}<span className="block text-xs font-normal text-blue-700 mt-0.5">Vacant / Available</span></button>)}</div></Modal>}
     {modal?.type === 'allocate' && <Modal title={modal.resident.allocation ? 'Confirm Resident Transfer' : 'Confirm Resident Allocation'} onClose={() => setModal(null)}><form onSubmit={confirmAssignment} className="space-y-4"><div className="rounded-xl bg-indigo-50 p-3 text-sm"><strong>{modal.resident.name}</strong><div className="mt-1 text-indigo-700">{modal.resident.allocation ? `${bedLocation(modalOriginBed) || `Bed #${modal.resident.allocation.bed_id}`} → ` : ''}{bedLocation({ ...modal.bed, building: modal.bed.room?.building || building, floor: modal.bed.room?.floor, room: modal.bed.room || selectedRoom })}</div></div>{modal.eligibilityError && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{modal.eligibilityError}</div>}<label className="block text-sm font-medium">Reason or note<input value={modal.reason} onChange={e => setModal({ ...modal, reason: e.target.value })} className="mt-1 w-full rounded-xl border p-2.5" /></label>{modal.showOverride && <><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={modal.override} onChange={e => setModal({ ...modal, override: e.target.checked })} />Use authorized eligibility override</label>{modal.override && <label className="block text-sm font-medium">Override reason<input required value={modal.override_reason} onChange={e => setModal({ ...modal, override_reason: e.target.value })} className="mt-1 w-full rounded-xl border p-2.5" /></label>}</>}<button disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 p-2.5 font-semibold text-white">{busy ? <><Loader2 className="animate-spin" size={17} />Saving allocation…</> : <><UserPlus size={16} />Confirm {modal.resident.allocation ? 'Transfer' : 'Allocation'}</>}</button></form></Modal>}
   </div>;
 }

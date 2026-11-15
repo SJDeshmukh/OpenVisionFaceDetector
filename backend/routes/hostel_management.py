@@ -363,6 +363,8 @@ def export_csv(kind):
                             matches_status = (
                                 status_filter == "all" or
                                 (status_filter == "available" and int(summary.get("available", 0)) > 0) or
+                                (status_filter == "inside" and int(summary.get("inside", 0)) > 0) or
+                                (status_filter == "outside" and int(summary.get("outside", 0)) > 0) or
                                 (status_filter == "partial" and int(summary.get("occupied", 0)) > 0 and int(summary.get("available", 0)) > 0) or
                                 (status_filter == "full" and int(summary.get("total", 0)) > 0 and int(summary.get("occupied", 0)) == int(summary.get("total", 0))) or
                                 (status_filter == "unavailable" and int(summary.get("unavailable", 0)) > 0)
@@ -370,8 +372,9 @@ def export_csv(kind):
                             if not matches_status: continue
                             for bed in room["beds"]:
                                 resident = bed.get("resident") or {}
-                                rows.append((building["name"], floor["name"], room["room_number"], bed["bed_label"], bed["status"], resident.get("name", ""), resident.get("resident_id", ""), bed.get("allocated_at", ""), bed.get("unavailable_reason", ""), bed.get("unavailable_note", ""), bed.get("reservation_expires_at", "")))
-                return _csv_response("hostel-current-occupancy.csv", ("Building", "Floor", "Room", "Bed", "Status", "Resident", "Resident ID", "Allocated At", "Unavailability Reason", "Note", "Reservation Expiry"), rows)
+                                presence_label = "Present (Inside)" if bed.get("presence_status") == "inside" else ("Outside" if bed.get("presence_status") == "outside" else ("Vacant" if bed.get("status") == "available" else str(bed.get("status", "")).capitalize()))
+                                rows.append((building["name"], floor["name"], room["room_number"], bed["bed_label"], bed["status"], presence_label, resident.get("name", ""), resident.get("resident_id", ""), bed.get("allocated_at", ""), bed.get("unavailable_reason", ""), bed.get("unavailable_note", ""), bed.get("reservation_expires_at", "")))
+                return _csv_response("hostel-current-occupancy.csv", ("Building", "Floor", "Room", "Bed", "Status", "Presence Status", "Resident", "Resident ID", "Allocated At", "Unavailability Reason", "Note", "Reservation Expiry"), rows)
             if kind == "history":
                 allowed_beds = {int(bed["id"]) for building in buildings for floor in building["floors"] for room in floor["rooms"] for bed in room["beds"]}
                 history = state["history"] if not building_filter else [item for item in state["history"] if any(value is not None and int(value) in allowed_beds for value in (item.get("previous_bed_id"), item.get("new_bed_id")))]

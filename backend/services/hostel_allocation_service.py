@@ -1,8 +1,12 @@
 """Transactional building, bed, and resident allocation operations."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
+import logging
 from threading import Lock
+
+
+logger = logging.getLogger(__name__)
 
 
 ADMIN_ROLES = {"super_admin", "vendor_admin", "admin", "owner"}
@@ -172,6 +176,107 @@ def _eligibility_errors(person, rules):
     return errors
 
 
+def _get_resident_presence_map(conn, c, vendor_id, person_ids):
+    """Return presence dict {person_id: {"presence_status": "inside" | "outside", "last_status": ..., "last_timestamp": ..., "on_leave": bool, "leave_info": ...}}."""
+    if not person_ids:
+        return {}
+
+    today_iso = date.today().isoformat()
+    presence_map = {}
+
+    # 1. Fetch active approved leave requests for today
+    on_leave = {}
+    try:
+        c.execute("""
+            SELECT student_id, leave_type, reason, start_date, end_date
+            FROM leave_requests
+            WHERE vendor_id = ? AND (
+                LOWER(TRIM(COALESCE(final_status, ''))) = 'approved'
+                OR LOWER(TRIM(COALESCE(rector_status, ''))) = 'approved'
+            )
+        """, (vendor_id,))
+        for row in c.fetchall() or []:
+            sid = row[0] if not hasattr(row, "keys") else row["student_id"]
+            if sid is None:
+                continue
+            s_date = str(row[3] if not hasattr(row, "keys") else row["start_date"] or "")[:10]
+            e_date = str(row[4] if not hasattr(row, "keys") else row["end_date"] or "")[:10]
+            if (s_date and e_date and s_date <= today_iso <= e_date) or (s_date and s_date == today_iso):
+                try:
+                    sid_int = int(sid)
+                except (ValueError, TypeError):
+                    sid_int = sid
+                on_leave[sid_int] = {
+                    "leave_type": row[1] if not hasattr(row, "keys") else row["leave_type"],
+                    "reason": row[2] if not hasattr(row, "keys") else row["reason"],
+                    "start_date": s_date,
+                    "end_date": e_date,
+                }
+    except Exception as exc:
+        logger.warning("Could not check leave_requests for vendor %s: %s", vendor_id, exc)
+
+    # 2. Fetch the latest attendance punch for residents
+    latest_punches = {}
+    try:
+        c.execute("""
+            SELECT a.person_id, a.status, a.timestamp
+            FROM attendance a
+            INNER JOIN (
+                SELECT person_id, MAX(id) AS max_id
+                FROM attendance
+                WHERE vendor_id = ? AND person_id IS NOT NULL
+                GROUP BY person_id
+            ) m ON a.id = m.max_id
+            WHERE a.vendor_id = ?
+        """, (vendor_id, vendor_id))
+        for row in c.fetchall() or []:
+            pid = row[0] if not hasattr(row, "keys") else row["person_id"]
+            st = row[1] if not hasattr(row, "keys") else row["status"]
+            ts = row[2] if not hasattr(row, "keys") else row["timestamp"]
+            if pid is not None:
+                try:
+                    pid_int = int(pid)
+                except (ValueError, TypeError):
+                    pid_int = pid
+                latest_punches[pid_int] = {
+                    "status": str(st or "").strip().upper(),
+                    "timestamp": str(ts or ""),
+                }
+    except Exception as exc:
+        logger.warning("Could not query latest attendance for vendor %s: %s", vendor_id, exc)
+
+    for pid in person_ids:
+        try:
+            pid_key = int(pid)
+        except (ValueError, TypeError):
+            pid_key = pid
+
+        punch = latest_punches.get(pid_key)
+        leave = on_leave.get(pid_key)
+        last_status = punch.get("status") if punch else None
+        last_timestamp = punch.get("timestamp") if punch else None
+
+        if last_status == "CHECK_OUT":
+            presence = "outside"
+        elif leave is not None:
+            if last_status == "CHECK_IN" and last_timestamp and str(last_timestamp)[:10] >= leave.get("start_date", ""):
+                presence = "inside"
+            else:
+                presence = "outside"
+        else:
+            presence = "inside"
+
+        presence_map[pid_key] = {
+            "presence_status": presence,
+            "last_status": last_status,
+            "last_timestamp": last_timestamp,
+            "on_leave": leave is not None,
+            "leave_info": leave,
+        }
+
+    return presence_map
+
+
 def get_state(conn, vendor_id, access):
     c = conn.cursor()
     scope = access.get("building_ids")
@@ -229,18 +334,31 @@ def get_state(conn, vendor_id, access):
                  LEFT JOIN faces f ON f.id = a.person_id AND f.vendor_id = b.vendor_id
                  WHERE b.vendor_id = ? ORDER BY b.room_id, b.position_index, b.id""", (vendor_id,))
     bed_columns = ("room_id", "id", "bed_label", "position_index", "availability_status", "unavailable_reason", "unavailable_note", "unavailable_from", "expected_reopening_date", "reservation_expires_at", "reserved_for_person_id", "reservation_note", "allocation_id", "person_id", "allocated_at", "allocated_by", "person_name", "display_id", "phone", "department", "custom_data")
-    for raw in c.fetchall() or []:
-        bed = _row(raw, bed_columns)
+    raw_beds = c.fetchall() or []
+    beds_data = [_row(raw, bed_columns) for raw in raw_beds]
+    allocated_pids = [int(b["person_id"]) for b in beds_data if b.get("person_id") is not None]
+    presence_map = _get_resident_presence_map(conn, c, vendor_id, allocated_pids)
+
+    for bed in beds_data:
         room = room_by_id.get(int(bed["room_id"]))
         if not room:
             continue
         occupied = bed.get("allocation_id") is not None
         bed["status"] = _effective_bed_status(bed, occupied)
-        if occupied:
+        if occupied and bed.get("person_id") is not None:
+            pid = int(bed["person_id"])
+            p_info = presence_map.get(pid, {"presence_status": "inside", "last_status": None, "last_timestamp": None, "on_leave": False, "leave_info": None})
             profile = _person_profile((bed["person_id"], bed["person_name"], bed.get("display_id"), bed.get("phone"), bed.get("department"), bed.get("custom_data")))
             if not access.get("can_view_resident_details"):
                 profile = {"id": profile["id"], "name": profile["name"], "resident_id": profile["resident_id"]}
+            profile["presence_status"] = p_info["presence_status"]
+            profile["last_movement"] = p_info
             bed["resident"] = profile
+            bed["presence_status"] = p_info["presence_status"]
+            bed["last_movement"] = p_info
+        else:
+            bed["presence_status"] = None
+            bed["last_movement"] = None
         room["beds"].append(bed)
 
     for building in buildings:
@@ -248,6 +366,8 @@ def get_state(conn, vendor_id, access):
             for room in floor["rooms"]:
                 beds = room["beds"]
                 counts = {key: sum(1 for bed in beds if bed["status"] == key) for key in ("occupied", "available", "reserved", "unavailable")}
+                counts["inside"] = sum(1 for bed in beds if bed.get("status") == "occupied" and bed.get("presence_status") == "inside")
+                counts["outside"] = sum(1 for bed in beds if bed.get("status") == "occupied" and bed.get("presence_status") == "outside")
                 room["summary"] = {"total": len(beds), **counts}
             floor["summary"] = summarize_rooms(floor["rooms"])
         building["summary"] = summarize_rooms([room for floor in building["floors"] for room in floor["rooms"]])
@@ -264,6 +384,10 @@ def get_state(conn, vendor_id, access):
         residents = [resident for resident in residents if resident["id"] not in allocations or int(allocations[resident["id"]]["bed_id"]) in visible_bed_ids]
     for resident in residents:
         resident["allocation"] = allocations.get(resident["id"])
+        p_res = presence_map.get(int(resident["id"])) if int(resident["id"]) in presence_map else None
+        if p_res:
+            resident["presence_status"] = p_res["presence_status"]
+            resident["last_movement"] = p_res
         if not access.get("can_view_resident_details"):
             resident.pop("phone", None); resident.pop("custom", None)
 
@@ -281,7 +405,7 @@ def get_state(conn, vendor_id, access):
 
 
 def summarize_rooms(rooms):
-    result = {"total": 0, "occupied": 0, "available": 0, "reserved": 0, "unavailable": 0}
+    result = {"total": 0, "occupied": 0, "available": 0, "reserved": 0, "unavailable": 0, "inside": 0, "outside": 0}
     for room in rooms:
         for key in result:
             result[key] += int((room.get("summary") or {}).get(key, 0))
