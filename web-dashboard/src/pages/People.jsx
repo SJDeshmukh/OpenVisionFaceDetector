@@ -2033,7 +2033,7 @@ const People = () => {
                 </div>
 
                 {/* Batch / Year of Passing Filter */}
-                {uniqueBatches.length > 0 && (
+                {(isHostel || schoolFlow) && uniqueBatches.length > 0 && (
                   <div className="flex items-center">
                     <select
                       value={selectedBatchFilter}
@@ -2081,7 +2081,7 @@ const People = () => {
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-xs uppercase tracking-wider">
-                        {user?.role !== 'faculty' && (
+                        {isHostel && user?.role !== 'faculty' && (
                           <th className="w-10 px-4 py-4 text-center">
                             <input
                               type="checkbox"
@@ -2124,16 +2124,16 @@ const People = () => {
                     <tbody className="divide-y divide-slate-100">
                       {loading ? (
                         <tr>
-                          <td colSpan={tableColumns.length + (user?.role !== 'faculty' ? 1 : 0) + 1 + (isHostel ? 1 : 0) + (user?.role !== 'faculty' ? 1 : 0)} className="px-6 py-8 text-center text-slate-400 italic">Loading {peopleLabel.toLowerCase()}...</td>
+                          <td colSpan={tableColumns.length + 1 + (isHostel ? 1 : 0) + (user?.role !== 'faculty' ? 1 : 0) + (isHostel && user?.role !== 'faculty' ? 1 : 0)} className="px-6 py-8 text-center text-slate-400 italic">Loading {peopleLabel.toLowerCase()}...</td>
                         </tr>
                       ) : filteredUsers.length === 0 ? (
                         <tr>
-                          <td colSpan={tableColumns.length + (user?.role !== 'faculty' ? 1 : 0) + 1 + (isHostel ? 1 : 0) + (user?.role !== 'faculty' ? 1 : 0)} className="px-6 py-8 text-center text-slate-400">No records found.</td>
+                          <td colSpan={tableColumns.length + 1 + (isHostel ? 1 : 0) + (user?.role !== 'faculty' ? 1 : 0) + (isHostel && user?.role !== 'faculty' ? 1 : 0)} className="px-6 py-8 text-center text-slate-400">No records found.</td>
                         </tr>
                       ) : (
                         filteredUsers.map((person, idx) => (
-                          <tr key={person.id || person.person_id || idx} className={`hover:bg-slate-50/60 transition-colors ${selectedPersonIds.includes(person.id) ? 'bg-blue-50/40' : ''}`}>
-                            {user?.role !== 'faculty' && (
+                          <tr key={person.id || person.person_id || idx} className={`hover:bg-slate-50/60 transition-colors ${isHostel && selectedPersonIds.includes(person.id) ? 'bg-blue-50/40' : ''}`}>
+                            {isHostel && user?.role !== 'faculty' && (
                               <td className="w-10 px-4 py-4 text-center" onClick={(e) => e.stopPropagation()}>
                                 <input
                                   type="checkbox"
@@ -3366,8 +3366,8 @@ const People = () => {
         </div>
       )}
 
-      {/* Floating Bulk Lifecycle Action Bar */}
-      {selectedPersonIds.length > 0 && user?.role !== 'faculty' && (
+      {/* Floating Bulk Lifecycle Action Bar (Hostel / Resident flow only) */}
+      {isHostel && selectedPersonIds.length > 0 && user?.role !== 'faculty' && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 backdrop-blur-md text-white px-5 py-3 rounded-2xl shadow-2xl border border-slate-700/70 flex flex-wrap items-center justify-center gap-3 animate-in slide-in-from-bottom-5 duration-200">
           <div className="flex items-center gap-2 pr-3 border-r border-slate-700">
             <span className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center shadow-inner">
@@ -3435,8 +3435,8 @@ const People = () => {
         </div>
       )}
 
-      {/* Bulk Lifecycle Status Modal */}
-      {isBulkStatusModalOpen && (
+      {/* Bulk Lifecycle Status Modal (Hostel only) */}
+      {isHostel && isBulkStatusModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
