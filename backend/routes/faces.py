@@ -2949,6 +2949,176 @@ def update_person_status(person_id):
         conn.close()
 
 
+@faces_bp.route("/persons/bulk-status", methods=["PUT", "POST"])
+def update_persons_bulk_status():
+    from app import get_db_connection, socketio
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+
+    if getattr(g, "user_role", None) not in {"admin", "vendor_admin", "owner", "super_admin"}:
+        return jsonify({"error": "Admin privileges required to update student lifecycle status"}), 403
+
+    data = request.get_json(silent=True) or {}
+    person_ids = data.get("person_ids")
+    if not isinstance(person_ids, list) or len(person_ids) == 0:
+        return jsonify({"error": "person_ids must be a non-empty list of student IDs"}), 400
+
+    try:
+        clean_ids = [int(pid) for pid in person_ids]
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid person IDs provided"}), 400
+
+    new_status = str(data.get("status") or "").strip().lower()
+    if new_status not in VALID_STUDENT_STATUSES:
+        return jsonify({
+            "error": f"Invalid status '{new_status}'. Allowed statuses: {', '.join(sorted(VALID_STUDENT_STATUSES))}"
+        }), 400
+
+    effective_date = data.get("effective_date")
+    reason = str(data.get("reason") or "").strip()
+
+    if new_status != "active":
+        if not effective_date:
+            effective_date = date.today().isoformat()
+        if not reason:
+            return jsonify({"error": "A reason is required when deactivating or changing student status"}), 400
+    else:
+        effective_date = None
+        reason = None
+
+    conn = get_db_connection()
+    set_row_factory(conn)
+    c = conn.cursor()
+    try:
+        vertical = vendor_vertical(c, vendor_id) if vendor_id else ""
+        actor_username = getattr(g, "username", "admin")
+
+        if new_status == "active":
+            target_student_status = "active"
+            target_login_enabled = 1
+            target_hostel_status = "resident" if vertical == "hostel" else "resident"
+        elif new_status == "graduated":
+            target_student_status = "graduated"
+            target_login_enabled = 0
+            target_hostel_status = "left_hostel"
+        elif new_status == "left_college":
+            target_student_status = "left_college"
+            target_login_enabled = 0
+            target_hostel_status = "left_hostel"
+        elif new_status == "left_hostel":
+            target_hostel_status = "left_hostel"
+            if vertical == "hostel":
+                target_student_status = "left_hostel"
+                target_login_enabled = 0
+            else:
+                target_student_status = "active"
+                target_login_enabled = 1
+        elif new_status == "suspended":
+            target_student_status = "suspended"
+            target_login_enabled = 0
+            target_hostel_status = "not_applicable"
+
+        placeholders = ",".join("?" for _ in clean_ids)
+        c.execute(
+            f"""UPDATE faces
+                SET student_status = ?,
+                    hostel_status = ?,
+                    login_enabled = ?,
+                    exit_date = ?,
+                    exit_reason = ?,
+                    status_updated_at = CURRENT_TIMESTAMP,
+                    status_updated_by = ?
+                WHERE vendor_id = ? AND id IN ({placeholders})""",
+            [
+                target_student_status,
+                target_hostel_status,
+                target_login_enabled,
+                effective_date,
+                reason,
+                actor_username,
+                vendor_id,
+                *clean_ids,
+            ],
+        )
+
+        if target_login_enabled == 0 or target_student_status != "active":
+            try:
+                c.execute(
+                    f"SELECT username FROM system_users WHERE vendor_id = ? AND person_id IN ({placeholders})",
+                    [vendor_id, *clean_ids],
+                )
+                user_rows = c.fetchall() or []
+                unames = [u[0] if not hasattr(u, "keys") else u["username"] for u in user_rows if u]
+                if unames:
+                    session_placeholders = ",".join("?" for _ in unames)
+                    c.execute(f"DELETE FROM active_sessions WHERE username IN ({session_placeholders})", unames)
+            except Exception as session_err:
+                logger.warning(f"Failed to clear active sessions for bulk persons: {session_err}")
+
+        if target_hostel_status == "left_hostel":
+            try:
+                c.execute(
+                    f"DELETE FROM hostel_allocations WHERE vendor_id = ? AND person_id IN ({placeholders})",
+                    [vendor_id, *clean_ids],
+                )
+            except Exception:
+                pass
+
+        audit_details = json.dumps({
+            "count": len(clean_ids),
+            "person_ids": clean_ids,
+            "new_status": target_student_status,
+            "hostel_status": target_hostel_status,
+            "login_enabled": target_login_enabled,
+            "effective_date": effective_date,
+            "reason": reason,
+        })
+        try:
+            c.execute(
+                """INSERT INTO audit_logs (actor_username, actor_role, target_vendor_id, action, details)
+                   VALUES (?, ?, ?, 'student_lifecycle_bulk_update', ?)""",
+                (actor_username, getattr(g, "user_role", "admin"), vendor_id, audit_details),
+            )
+        except Exception as audit_err:
+            logger.warning(f"Failed to write audit log: {audit_err}")
+
+        conn.commit()
+        cache_delete_vendor_prefix(vendor_id)
+
+        try:
+            socketio.emit("student_bulk_status_updated", {
+                "vendor_id": vendor_id,
+                "person_ids": clean_ids,
+                "student_status": target_student_status,
+                "hostel_status": target_hostel_status,
+                "login_enabled": bool(target_login_enabled),
+            })
+        except Exception:
+            pass
+
+        return jsonify({
+            "success": True,
+            "updated_count": len(clean_ids),
+            "person_ids": clean_ids,
+            "student_status": target_student_status,
+            "hostel_status": target_hostel_status,
+            "login_enabled": bool(target_login_enabled),
+            "exit_date": effective_date,
+            "exit_reason": reason,
+            "status_updated_at": datetime.now(timezone.utc).isoformat(),
+            "status_updated_by": actor_username,
+        })
+    except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
+        logger.error(f"Error in bulk updating person status: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @faces_bp.route("/persons/<int:person_id>/profile", methods=["GET"])
 def get_person_profile(person_id):
     from app import get_db_connection

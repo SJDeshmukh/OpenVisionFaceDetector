@@ -203,6 +203,21 @@ const People = () => {
   const [activeMenuPersonId, setActiveMenuPersonId] = useState(null);
   const [menuOpenUpward, setMenuOpenUpward] = useState(false);
   
+  // Multi-select & Bulk Status States
+  const [selectedPersonIds, setSelectedPersonIds] = useState([]);
+  const [isBulkStatusModalOpen, setIsBulkStatusModalOpen] = useState(false);
+  const [bulkStatusData, setBulkStatusData] = useState({
+    status: 'graduated',
+    effective_date: new Date().toISOString().split('T')[0],
+    reason: ''
+  });
+  const [bulkStatusSubmitting, setBulkStatusSubmitting] = useState(false);
+
+  // Column-level and Batch Filters
+  const [selectedBatchFilter, setSelectedBatchFilter] = useState('all');
+  const [columnFilters, setColumnFilters] = useState({});
+  const [activeHeaderFilterCol, setActiveHeaderFilterCol] = useState(null);
+
   // Status Modal State
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
   const [statusModalTarget, setStatusModalTarget] = useState(null);
@@ -220,7 +235,10 @@ const People = () => {
   const [profileLoading, setProfileLoading] = useState(false);
 
   useEffect(() => {
-    const handleCloseMenu = () => setActiveMenuPersonId(null);
+    const handleCloseMenu = () => {
+      setActiveMenuPersonId(null);
+      setActiveHeaderFilterCol(null);
+    };
     window.addEventListener('click', handleCloseMenu);
     return () => window.removeEventListener('click', handleCloseMenu);
   }, []);
@@ -233,6 +251,53 @@ const People = () => {
       reason: ''
     });
     setIsStatusModalOpen(true);
+  };
+
+  const handleOpenBulkStatusModal = (targetStatus) => {
+    setBulkStatusData({
+      status: targetStatus,
+      effective_date: new Date().toISOString().split('T')[0],
+      reason: targetStatus === 'graduated' ? 'Batch Graduated' : ''
+    });
+    setIsBulkStatusModalOpen(true);
+  };
+
+  const handleBulkStatusSubmit = async (e) => {
+    e.preventDefault();
+    if (selectedPersonIds.length === 0) return;
+    setBulkStatusSubmitting(true);
+    try {
+      const res = await axios.post(`${API_URL}/persons/bulk-status`, {
+        person_ids: selectedPersonIds,
+        status: bulkStatusData.status,
+        effective_date: bulkStatusData.effective_date,
+        reason: bulkStatusData.reason
+      });
+      addToast(`Successfully updated status for ${res.data.updated_count || selectedPersonIds.length} ${peopleLabel.toLowerCase()}`, 'success');
+      setIsBulkStatusModalOpen(false);
+
+      updateUsersAndCache(prev => prev.map(u => {
+        if (selectedPersonIds.includes(u.id)) {
+          return {
+            ...u,
+            student_status: res.data.student_status,
+            hostel_status: res.data.hostel_status,
+            login_enabled: res.data.login_enabled ? 1 : 0,
+            exit_date: res.data.exit_date,
+            exit_reason: res.data.exit_reason,
+            status_updated_at: res.data.status_updated_at,
+            status_updated_by: res.data.status_updated_by
+          };
+        }
+        return u;
+      }));
+      setSelectedPersonIds([]);
+    } catch (err) {
+      console.error('Failed to update bulk status:', err);
+      addToast(err.response?.data?.error || 'Failed to update student lifecycle status in bulk', 'error');
+    } finally {
+      setBulkStatusSubmitting(false);
+    }
   };
 
   const handleStatusSubmit = async (e) => {
@@ -1307,13 +1372,42 @@ const People = () => {
     return Array.from(set).sort();
   }, [users]);
 
-  const isAnyFilterActive = selectedDeptFilter !== 'all' || selectedGroupFilter !== 'all' || faceFilter !== 'all' || parentFilter !== 'all' || Boolean(searchTerm);
+  // Extract unique batches / passing years
+  const uniqueBatches = useMemo(() => {
+    const set = new Set();
+    users.forEach(u => {
+      const b = u.batch || u.custom_data?.batch || u.custom_data?.admission_year || u.custom_data?.class_year || u.year_of_study;
+      if (b && typeof b === 'string' && b.trim()) set.add(b.trim());
+      else if (typeof b === 'number') set.add(String(b));
+    });
+    return Array.from(set).sort();
+  }, [users]);
+
+  const getColumnUniqueValues = (fieldKey) => {
+    const set = new Set();
+    users.forEach(u => {
+      let val = null;
+      if (fieldKey === '__name') val = u.name;
+      else if (fieldKey === '__status') val = u.student_status || 'active';
+      else val = getCellValue(u, fieldKey);
+      if (val && val !== '-' && typeof val === 'string' && val.trim()) {
+        set.add(val.trim());
+      } else if (typeof val === 'number') {
+        set.add(String(val));
+      }
+    });
+    return Array.from(set).sort().slice(0, 30);
+  };
+
+  const isAnyFilterActive = selectedDeptFilter !== 'all' || selectedGroupFilter !== 'all' || selectedBatchFilter !== 'all' || faceFilter !== 'all' || parentFilter !== 'all' || Object.values(columnFilters).some(v => Boolean(v)) || Boolean(searchTerm);
 
   const handleClearFilters = () => {
     setSelectedDeptFilter('all');
     setSelectedGroupFilter('all');
+    setSelectedBatchFilter('all');
     setFaceFilter('all');
     setParentFilter('all');
+    setColumnFilters({});
     setSearchTerm('');
   };
 
@@ -1386,6 +1480,35 @@ const People = () => {
       });
     }
 
+    // Filter by Batch / Year
+    if (selectedBatchFilter !== 'all') {
+      result = result.filter(u => {
+        const b = String(u.batch || u.custom_data?.batch || u.custom_data?.admission_year || u.custom_data?.class_year || u.year_of_study || '').trim().toLowerCase();
+        return b === selectedBatchFilter.trim().toLowerCase();
+      });
+    }
+
+    // Filter by column-level filters
+    const activeColFilters = Object.entries(columnFilters).filter(([, val]) => val && String(val).trim());
+    if (activeColFilters.length > 0) {
+      result = result.filter(u => {
+        return activeColFilters.every(([colField, filterVal]) => {
+          const search = String(filterVal).trim().toLowerCase();
+          if (colField === '__name') {
+            return (u.name || '').toLowerCase().includes(search);
+          }
+          if (colField === '__status') {
+            const s = (u.student_status || 'active').toLowerCase();
+            const h = (u.hostel_status || '').toLowerCase();
+            if (search === 'left_hostel') return h === 'left_hostel' || s === 'left_hostel';
+            return s.includes(search);
+          }
+          const val = getCellValue(u, colField);
+          return String(val).toLowerCase().includes(search);
+        });
+      });
+    }
+
     if (!searchTerm) return result;
     const lowerSearch = searchTerm.toLowerCase();
     return result.filter(u => {
@@ -1419,7 +1542,118 @@ const People = () => {
       return false;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [users, searchTerm, selectedClassForView, statusFilter, isHostel, selectedDeptFilter, selectedGroupFilter, faceFilter, parentFilter, registrationColumns]);
+  }, [users, searchTerm, selectedClassForView, statusFilter, isHostel, selectedDeptFilter, selectedGroupFilter, selectedBatchFilter, faceFilter, parentFilter, columnFilters, registrationColumns]);
+
+  const renderHeaderWithFilter = (title, fieldKey, uniqueVals = []) => {
+    const isFiltered = Boolean(columnFilters[fieldKey]);
+    const isOpen = activeHeaderFilterCol === fieldKey;
+    const isRightAligned = fieldKey === '__status' || fieldKey === 'actions';
+
+    return (
+      <div className="relative inline-flex items-center gap-1.5 group select-none">
+        <span className="font-bold">{title}</span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setActiveHeaderFilterCol(isOpen ? null : fieldKey);
+          }}
+          className={`p-1 rounded transition-colors ${
+            isFiltered
+              ? 'text-blue-600 bg-blue-100 ring-1 ring-blue-400'
+              : 'text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 opacity-60 group-hover:opacity-100'
+          }`}
+          title={`Filter by ${title}`}
+        >
+          <Filter size={11} className={isFiltered ? 'fill-blue-600 text-blue-600' : ''} />
+        </button>
+
+        {isOpen && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className={`absolute ${isRightAligned ? 'right-0 origin-top-right' : 'left-0 origin-top-left'} top-full mt-2 w-56 bg-white border border-slate-200 rounded-xl shadow-2xl z-40 p-2.5 text-xs text-slate-700 font-normal normal-case animate-in fade-in zoom-in-95 duration-100`}
+          >
+            <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-slate-100">
+              <span className="font-semibold text-slate-800">Filter: {title}</span>
+              {isFiltered && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setColumnFilters(prev => {
+                      const next = { ...prev };
+                      delete next[fieldKey];
+                      return next;
+                    });
+                  }}
+                  className="text-[10px] text-rose-600 hover:underline font-semibold"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            <div className="relative mb-2">
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder={`Search ${title}...`}
+                value={columnFilters[fieldKey] || ''}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setColumnFilters(prev => ({
+                    ...prev,
+                    [fieldKey]: val
+                  }));
+                }}
+                className="w-full pl-7 pr-2 py-1 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                autoFocus
+              />
+            </div>
+
+            {uniqueVals.length > 0 && (
+              <div className="max-h-36 overflow-y-auto space-y-0.5 divide-y divide-slate-50">
+                <div
+                  onClick={() => {
+                    setColumnFilters(prev => {
+                      const next = { ...prev };
+                      delete next[fieldKey];
+                      return next;
+                    });
+                    setActiveHeaderFilterCol(null);
+                  }}
+                  className={`px-2 py-1 rounded cursor-pointer text-[11px] hover:bg-slate-100 flex items-center justify-between ${
+                    !isFiltered ? 'font-bold text-blue-600 bg-blue-50/50' : 'text-slate-600'
+                  }`}
+                >
+                  <span>(All)</span>
+                  {!isFiltered && <Check size={12} className="text-blue-600" />}
+                </div>
+                {uniqueVals.map((val, idx) => {
+                  const isSelected = String(columnFilters[fieldKey] || '').toLowerCase() === String(val).toLowerCase();
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => {
+                        setColumnFilters(prev => ({ ...prev, [fieldKey]: val }));
+                        setActiveHeaderFilterCol(null);
+                      }}
+                      className={`px-2 py-1 rounded cursor-pointer text-[11px] hover:bg-slate-100 flex items-center justify-between truncate ${
+                        isSelected ? 'font-bold text-blue-600 bg-blue-50/50' : 'text-slate-600'
+                      }`}
+                      title={val}
+                    >
+                      <span className="truncate">{val}</span>
+                      {isSelected && <Check size={12} className="text-blue-600 shrink-0" />}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -1791,6 +2025,22 @@ const People = () => {
                   </select>
                 </div>
 
+                {/* Batch / Year of Passing Filter */}
+                {uniqueBatches.length > 0 && (
+                  <div className="flex items-center">
+                    <select
+                      value={selectedBatchFilter}
+                      onChange={(e) => setSelectedBatchFilter(e.target.value)}
+                      className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all cursor-pointer"
+                    >
+                      <option value="all">All Batches / Years</option>
+                      {uniqueBatches.map(b => (
+                        <option key={b} value={b}>{b}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 {/* Parent Status Filter (for student / hostel records) */}
                 {schoolFlow && (
                   <div className="flex items-center">
@@ -1824,28 +2074,73 @@ const People = () => {
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-xs uppercase tracking-wider">
-                        <th className="px-6 py-4 font-bold">{nameHeader}</th>
+                        {user?.role !== 'faculty' && (
+                          <th className="w-10 px-4 py-4 text-center">
+                            <input
+                              type="checkbox"
+                              checked={filteredUsers.length > 0 && filteredUsers.every(p => selectedPersonIds.includes(p.id))}
+                              ref={el => {
+                                if (el) {
+                                  el.indeterminate = filteredUsers.some(p => selectedPersonIds.includes(p.id)) && !filteredUsers.every(p => selectedPersonIds.includes(p.id));
+                                }
+                              }}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  const visibleIds = filteredUsers.map(p => p.id);
+                                  setSelectedPersonIds(prev => Array.from(new Set([...prev, ...visibleIds])));
+                                } else {
+                                  const visibleIdsSet = new Set(filteredUsers.map(p => p.id));
+                                  setSelectedPersonIds(prev => prev.filter(id => !visibleIdsSet.has(id)));
+                                }
+                              }}
+                              className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer accent-blue-600"
+                              title="Select all filtered students"
+                            />
+                          </th>
+                        )}
+                        <th className="px-6 py-4 font-bold">
+                          {renderHeaderWithFilter(nameHeader, '__name', getColumnUniqueValues('__name'))}
+                        </th>
                         {tableColumns.map(col => (
                           <th key={col.field} className="px-6 py-4 font-bold">
-                            {col.label}
+                            {renderHeaderWithFilter(col.label, col.field, getColumnUniqueValues(col.field))}
                           </th>
                         ))}
-                        {isHostel && <th className="px-6 py-4 font-bold">Status</th>}
+                        {isHostel && (
+                          <th className="px-6 py-4 font-bold">
+                            {renderHeaderWithFilter('Status', '__status', ['active', 'graduated', 'left_college', 'left_hostel', 'suspended'])}
+                          </th>
+                        )}
                         {user?.role !== 'faculty' && <th className="px-6 py-4 font-bold text-right">Actions</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {loading ? (
                         <tr>
-                          <td colSpan={tableColumns.length + 1 + (isHostel ? 1 : 0) + (user?.role !== 'faculty' ? 1 : 0)} className="px-6 py-8 text-center text-slate-400 italic">Loading {peopleLabel.toLowerCase()}...</td>
+                          <td colSpan={tableColumns.length + (user?.role !== 'faculty' ? 1 : 0) + 1 + (isHostel ? 1 : 0) + (user?.role !== 'faculty' ? 1 : 0)} className="px-6 py-8 text-center text-slate-400 italic">Loading {peopleLabel.toLowerCase()}...</td>
                         </tr>
                       ) : filteredUsers.length === 0 ? (
                         <tr>
-                          <td colSpan={tableColumns.length + 1 + (isHostel ? 1 : 0) + (user?.role !== 'faculty' ? 1 : 0)} className="px-6 py-8 text-center text-slate-400">No records found.</td>
+                          <td colSpan={tableColumns.length + (user?.role !== 'faculty' ? 1 : 0) + 1 + (isHostel ? 1 : 0) + (user?.role !== 'faculty' ? 1 : 0)} className="px-6 py-8 text-center text-slate-400">No records found.</td>
                         </tr>
                       ) : (
                         filteredUsers.map((person, idx) => (
-                          <tr key={person.id || person.person_id || idx} className="hover:bg-slate-50/60 transition-colors">
+                          <tr key={person.id || person.person_id || idx} className={`hover:bg-slate-50/60 transition-colors ${selectedPersonIds.includes(person.id) ? 'bg-blue-50/40' : ''}`}>
+                            {user?.role !== 'faculty' && (
+                              <td className="w-10 px-4 py-4 text-center" onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedPersonIds.includes(person.id)}
+                                  onChange={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedPersonIds(prev =>
+                                      prev.includes(person.id) ? prev.filter(id => id !== person.id) : [...prev, person.id]
+                                    );
+                                  }}
+                                  className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer accent-blue-600"
+                                />
+                              </td>
+                            )}
                             <td className="px-6 py-4 whitespace-nowrap">
                               <div className="flex items-center">
                                 <PersonAvatar person={person} />
@@ -3056,6 +3351,226 @@ const People = () => {
                   }`}
                 >
                   {statusSubmitting ? 'Updating...' : 'Confirm Status Change'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Bulk Lifecycle Action Bar */}
+      {selectedPersonIds.length > 0 && user?.role !== 'faculty' && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 backdrop-blur-md text-white px-5 py-3 rounded-2xl shadow-2xl border border-slate-700/70 flex flex-wrap items-center justify-center gap-3 animate-in slide-in-from-bottom-5 duration-200">
+          <div className="flex items-center gap-2 pr-3 border-r border-slate-700">
+            <span className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center shadow-inner">
+              {selectedPersonIds.length}
+            </span>
+            <span className="text-xs font-semibold whitespace-nowrap">
+              {selectedPersonIds.length === 1 ? `${personLabel} Selected` : `${peopleLabel} Selected`}
+            </span>
+            <button
+              onClick={() => setSelectedPersonIds([])}
+              className="ml-2 text-slate-400 hover:text-white text-xs underline cursor-pointer"
+            >
+              Clear
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleOpenBulkStatusModal('graduated')}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm shadow-indigo-900/50 cursor-pointer"
+            >
+              <GraduationCap size={15} />
+              <span>Mark as Graduated</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleOpenBulkStatusModal('left_college')}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm shadow-orange-900/50 cursor-pointer"
+            >
+              <LogOut size={15} />
+              <span>Mark Left College</span>
+            </button>
+
+            {isHostel && (
+              <button
+                type="button"
+                onClick={() => handleOpenBulkStatusModal('left_hostel')}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm shadow-amber-900/50 cursor-pointer"
+              >
+                <Home size={15} />
+                <span>Mark Left Hostel</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => handleOpenBulkStatusModal('suspended')}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm shadow-rose-900/50 cursor-pointer"
+            >
+              <AlertOctagon size={15} />
+              <span>Suspend</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleOpenBulkStatusModal('active')}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm shadow-emerald-900/50 cursor-pointer"
+            >
+              <CheckCircle2 size={15} />
+              <span>Reactivate</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Lifecycle Status Modal */}
+      {isBulkStatusModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                  bulkStatusData.status === 'active' ? 'bg-emerald-100 text-emerald-700' :
+                  bulkStatusData.status === 'graduated' ? 'bg-indigo-100 text-indigo-700' :
+                  bulkStatusData.status === 'left_college' ? 'bg-orange-100 text-orange-700' :
+                  bulkStatusData.status === 'left_hostel' ? 'bg-amber-100 text-amber-700' :
+                  'bg-rose-100 text-rose-700'
+                }`}>
+                  {bulkStatusData.status === 'active' && <CheckCircle2 size={22} />}
+                  {bulkStatusData.status === 'graduated' && <GraduationCap size={22} />}
+                  {bulkStatusData.status === 'left_college' && <LogOut size={22} />}
+                  {bulkStatusData.status === 'left_hostel' && <Home size={22} />}
+                  {bulkStatusData.status === 'suspended' && <AlertOctagon size={22} />}
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">
+                    {bulkStatusData.status === 'active' ? `Bulk Reactivate ${peopleLabel}` :
+                     bulkStatusData.status === 'graduated' ? `Bulk Mark as Graduated` :
+                     bulkStatusData.status === 'left_college' ? `Bulk Mark as Left College` :
+                     bulkStatusData.status === 'left_hostel' ? `Bulk Mark as Left Hostel` :
+                     `Bulk Suspend ${peopleLabel}`}
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Applying to <span className="font-bold text-blue-600">{selectedPersonIds.length}</span> selected {peopleLabel.toLowerCase()}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBulkStatusModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg cursor-pointer"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleBulkStatusSubmit} className="p-6 space-y-5">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">
+                  Target Lifecycle Status
+                </label>
+                <select
+                  value={bulkStatusData.status}
+                  onChange={(e) => setBulkStatusData(prev => ({ ...prev, status: e.target.value }))}
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium text-slate-800 cursor-pointer"
+                >
+                  <option value="graduated">Graduated (Login & Attendance Disabled)</option>
+                  <option value="active">Active (Full Access & Attendance Restored)</option>
+                  <option value="left_college">Left College (Login & Attendance Disabled)</option>
+                  {isHostel && <option value="left_hostel">Left Hostel (Hostel Attendance & Occupancy Disabled)</option>}
+                  <option value="suspended">Suspended (Temporary Access Blocked)</option>
+                </select>
+              </div>
+
+              <div className={`p-3.5 rounded-xl text-xs leading-relaxed border ${
+                bulkStatusData.status === 'active' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' :
+                bulkStatusData.status === 'left_hostel' ? 'bg-amber-50 text-amber-800 border-amber-200' :
+                'bg-slate-50 text-slate-700 border-slate-200'
+              }`}>
+                {bulkStatusData.status === 'active' && `Reactivating will restore portal login, enable attendance tracking, and allow new leave requests for all ${selectedPersonIds.length} students.`}
+                {bulkStatusData.status === 'graduated' && `Graduating disables student login and daily attendance tracking for all ${selectedPersonIds.length} students. Academic history, attendance logs, and parent records are securely archived.`}
+                {bulkStatusData.status === 'left_college' && `Disables student portal login and daily attendance tracking for all ${selectedPersonIds.length} students. Historical records remain fully archived.`}
+                {bulkStatusData.status === 'left_hostel' && `All ${selectedPersonIds.length} students will be removed from hostel occupancy and hostel gate pass tracking. College enrollment accounts remain active.`}
+                {bulkStatusData.status === 'suspended' && `Suspends portal logins, invalidates active sessions, and disables biometric attendance punches for all ${selectedPersonIds.length} students until reactivated.`}
+              </div>
+
+              {bulkStatusData.status !== 'active' && (
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">
+                      Effective Date <span className="text-rose-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <Calendar size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="date"
+                        required
+                        value={bulkStatusData.effective_date}
+                        onChange={(e) => setBulkStatusData(prev => ({ ...prev, effective_date: e.target.value }))}
+                        className="w-full pl-9 pr-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium text-slate-800"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">
+                      Reason for Status Change <span className="text-rose-500">*</span>
+                    </label>
+                    <textarea
+                      required
+                      rows={3}
+                      value={bulkStatusData.reason}
+                      onChange={(e) => setBulkStatusData(prev => ({ ...prev, reason: e.target.value }))}
+                      placeholder="Enter batch graduation reason or audit note..."
+                      className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-slate-800 placeholder-slate-400"
+                    />
+
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {(bulkStatusData.status === 'graduated' ? [
+                        'Batch Graduated', 'Completed degree requirements', 'Final semester passed', 'Convocation 2026'
+                      ] : bulkStatusData.status === 'left_college' ? [
+                        'Batch Passed Out', 'College transfer', 'Discontinued course'
+                      ] : bulkStatusData.status === 'left_hostel' ? [
+                        'Tenure completed', 'Vacated hostel rooms', 'Day scholar conversion'
+                      ] : [
+                        'Disciplinary action', 'Pending inquiry', 'Administrative suspension'
+                      ]).map((sug, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => setBulkStatusData(prev => ({ ...prev, reason: sug }))}
+                          className="text-[11px] px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors cursor-pointer"
+                        >
+                          + {sug}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setIsBulkStatusModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={bulkStatusSubmitting}
+                  className={`px-5 py-2 text-xs font-bold text-white rounded-xl shadow-lg transition-all flex items-center gap-2 cursor-pointer ${
+                    bulkStatusData.status === 'active'
+                      ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20'
+                      : 'bg-blue-600 hover:bg-blue-700 shadow-blue-500/20'
+                  }`}
+                >
+                  {bulkStatusSubmitting ? 'Updating...' : `Confirm & Apply to ${selectedPersonIds.length} ${peopleLabel}`}
                 </button>
               </div>
             </form>
