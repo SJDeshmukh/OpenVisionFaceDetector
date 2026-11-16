@@ -3,7 +3,7 @@ import os
 import json
 import base64
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from services.auth_service import authenticate_vendor_access, generate_token_with_claims, hash_password, verify_token, require_auth, login_email_from_profile
 from services.face_service import _normalize_vec, _decode_data_uri_to_rgb
 from services.mobile_face_template import decode_face_template as _decode_face_template
