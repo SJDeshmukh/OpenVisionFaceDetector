@@ -1099,7 +1099,7 @@ const People = () => {
         if (newMapping[key] === header) delete newMapping[key];
       });
       if ([
-        'name', 'phone', 'email', 'person_id', 'department', 'designation', 'shift',
+        'name', 'phone', 'email', 'person_id', 'branch', 'department', 'designation', 'shift',
         'academic_session', 'program_code', 'year_of_study', 'semester',
         'division', 'roll_number', 'parent_name', 'parent_phone',
       ].includes(newRole)) {
@@ -1190,6 +1190,13 @@ const People = () => {
         headerMapping[f.role] = f.header;
       }
     });
+
+    if (!headerMapping.branch) {
+      const branchField = fields.find(f => ['branch', 'stream', 'course'].includes(String(f.header).toLowerCase()));
+      if (branchField) {
+        headerMapping.branch = branchField.header;
+      }
+    }
 
     await uploadPeopleSpreadsheet(file, headerMapping, fieldTypes, fieldOptions, fieldRequired);
   };
@@ -2677,7 +2684,7 @@ const People = () => {
                         File: <span className="font-mono">{bulkMappingRequest.filename}</span> ({bulkMappingRequest.totalRows} records detected)
                       </h4>
                       <p className="text-[11px] text-blue-700 mt-0.5 leading-relaxed">
-                        Review each column's type (<strong>Text</strong>, <strong>Numerical</strong>, or <strong>Dropdown</strong>). This configuration is automatically synchronized with the mobile app and web registration forms.
+                        Review each column's type (<strong>Text</strong>, <strong>Numerical</strong>, or <strong>Dropdown</strong>). All types, mappings, and custom dropdown options are automatically remembered and retained for future imports and edits.
                       </p>
                     </div>
                   </div>
@@ -2754,13 +2761,14 @@ const People = () => {
                               <option value="phone">Phone / Mobile</option>
                               <option value="email">Email</option>
                               <option value="person_id">Admission / Student / Employee ID</option>
+                              <option value="branch">Branch / Stream</option>
+                              <option value="department">Department</option>
+                              <option value="division">Division / Section</option>
                               <option value="academic_session">Academic Session</option>
                               <option value="program_code">Program Code</option>
                               <option value="year_of_study">Year of Study</option>
                               <option value="semester">Semester</option>
-                              <option value="division">Division / Section</option>
                               <option value="roll_number">Roll Number</option>
-                              <option value="department">Department</option>
                               <option value="designation">Designation</option>
                               <option value="shift">Shift</option>
                               <option value="parent_name">Parent / Guardian Name</option>

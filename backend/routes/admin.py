@@ -2278,10 +2278,15 @@ def get_vendor_registration_config(vendor_id):
         conn.close()
 
 @admin_bp.route("/vendors/<int:vendor_id>/registration-config", methods=["PUT"])
-@super_admin_required
 def update_vendor_registration_config(vendor_id):
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
+    caller_vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    if caller_vendor_id and caller_vendor_id != vendor_id:
+        return jsonify({"error": "Access Denied"}), 403
+
     data = request.json
     config = data.get('config') # Expecting a list/object
     

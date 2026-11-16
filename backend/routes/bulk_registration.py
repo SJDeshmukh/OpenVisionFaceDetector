@@ -108,7 +108,39 @@ def bulk_registration_inspect_file():
         )
         header_mapping = mapping_result.get('mapping', {})
 
+        # Auto-match branch header if not mapped
+        if 'branch' not in header_mapping:
+            for h in headers:
+                if str(h).strip().lower() in ('branch', 'stream', 'course'):
+                    header_mapping['branch'] = h
+                    break
+
         field_specs = inspect_spreadsheet_fields(headers, data, canonical_mapping=header_mapping)
+
+        # Overlay saved registration_config so custom options, types, and mappings are remembered across edits
+        try:
+            raw_cfg = (vendor_row['registration_config'] if hasattr(vendor_row, 'keys') else vendor_row[1]) if vendor_row else None
+            saved_config = json.loads(raw_cfg) if isinstance(raw_cfg, str) else (raw_cfg or [])
+            if isinstance(saved_config, list):
+                for spec in field_specs:
+                    header_clean = str(spec.get('header') or '').strip().lower()
+                    matched_reg = next(
+                        (reg for reg in saved_config if str(reg.get('label') or '').strip().lower() == header_clean or str(reg.get('field') or '').strip().lower() == header_clean),
+                        None
+                    )
+                    if matched_reg:
+                        if matched_reg.get('type'):
+                            spec['type'] = matched_reg['type']
+                        if 'required' in matched_reg:
+                            spec['required'] = bool(matched_reg['required'])
+                        if matched_reg.get('options'):
+                            existing_opts = [str(o).strip() for o in matched_reg['options'] if str(o).strip()]
+                            spec['options'] = list(dict.fromkeys(existing_opts + (spec.get('options') or [])))
+                        if matched_reg.get('field'):
+                            spec['role'] = matched_reg['field']
+                            header_mapping[matched_reg['field']] = spec['header']
+        except Exception as overlay_err:
+            logger.warning("Failed to overlay saved registration config: %s", overlay_err)
 
         return jsonify({
             "success": True,
@@ -304,6 +336,10 @@ def bulk_registration_upload():
                         if d: valid_hostel_branches.add(str(d).strip().lower())
                 except Exception:
                     pass
+            for opts in (requested_field_options or {}).values():
+                if isinstance(opts, list):
+                    for o in opts:
+                        if o: valid_hostel_branches.add(str(o).strip().lower())
 
         success_count = 0
         created_count = 0
@@ -350,15 +386,18 @@ def bulk_registration_upload():
                 row_class_year = req_class_year or (str(row.get(class_year_key) or '').strip() if class_year_key else None)
                 row_division = req_division or (str(row.get(division_key) or '').strip() if division_key else None)
                 row_branch = req_branch or (str(row.get(branch_key) or '').strip() if branch_key else None)
+                if not row_branch:
+                    for fb_key in [program_code_key, department_key, 'branch', 'Branch', 'BRANCH', 'department', 'Department']:
+                        if fb_key and row.get(fb_key):
+                            row_branch = str(row.get(fb_key)).strip()
+                            break
+
                 if vendor_vertical == 'hostel':
                     if not row_branch or not str(row_branch).strip():
                         errors.append(f"Row {row_idx + 2}: Branch is mandatory for hostel resident registration")
                         skipped_count += 1
                         continue
-                    if valid_hostel_branches and str(row_branch).strip().lower() not in valid_hostel_branches:
-                        errors.append(f"Row {row_idx + 2}: Invalid branch '{row_branch}'. Must be one of the vendor's configured branches: {', '.join(sorted(valid_hostel_branches))}")
-                        skipped_count += 1
-                        continue
+                    valid_hostel_branches.add(str(row_branch).strip().lower())
                 row_academic_payload = dict(req_academic_payload) if req_academic_payload else None
                 if not row_class_id and excel_class_id_key:
                     row_class_id = str(row.get(excel_class_id_key) or '').strip()
@@ -868,6 +907,18 @@ def bulk_registration_upload():
             new_reg_config.append(reg_item)
         
         c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(new_reg_config, separators=(',', ':')), vendor_id))
+
+        if valid_hostel_branches:
+            try:
+                c.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
+                cur_v_row = c.fetchone()
+                cur_depts = []
+                if cur_v_row and cur_v_row[0]:
+                    cur_depts = json.loads(cur_v_row[0]) if isinstance(cur_v_row[0], str) else cur_v_row[0]
+                merged_depts = list(dict.fromkeys(cur_depts + [b.title() if b.islower() else b for b in valid_hostel_branches]))
+                c.execute("UPDATE vendors SET departments = ? WHERE id = ?", (json.dumps(merged_depts), vendor_id))
+            except Exception as dept_sync_err:
+                logger.warning("Failed to sync departments: %s", dept_sync_err)
 
         try:
             from app import socketio
