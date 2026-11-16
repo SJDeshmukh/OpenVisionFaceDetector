@@ -325,7 +325,8 @@ const LeaveManagement = () => {
       await axios.post(`${API_URL}/leave/admin/approve`, {
         request_id: requestId,
         role: currentRole,
-        action: action
+        action: action,
+        department: staffSession?.department || undefined
       }, staffRequestConfig);
       fetchData(); // Refresh list
     } catch (err) {
@@ -627,7 +628,7 @@ const LeaveManagement = () => {
               onClick={() => setShowPinModal(true)}
               className="px-4 py-2 rounded-md text-sm font-medium text-slate-700 hover:bg-white hover:text-blue-600 transition-colors flex items-center gap-1.5"
             >
-              <ShieldCheck size={15} /> {staffSession ? `${staffSession.name || staffSession.role}` : 'Staff PIN'}
+              <ShieldCheck size={15} /> {staffSession ? `${staffSession.name || staffSession.role}${staffSession.department ? ` · ${staffSession.department}` : ''}` : 'Staff PIN'}
             </button>
           )}
           {isRegularUser ? (

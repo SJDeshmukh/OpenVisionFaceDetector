@@ -108,7 +108,7 @@ def normalize_stages(stages):
                 "actor_type": actor_type,
                 "role_key": role_key,
                 "sequence": index,
-                "department_scoped": bool(raw.get("department_scoped", False)),
+                "department_scoped": bool(raw.get("department_scoped", False)) or (role_key == "hod"),
                 "auth_method": auth_method,
             }
         )
@@ -131,7 +131,10 @@ def _workflow_stages(cursor, workflow_id):
     result = []
     for row in cursor.fetchall():
         mapped = _row_dict(row)
-        result.append(mapped if isinstance(mapped, dict) else dict(zip(columns, row)))
+        item = mapped if isinstance(mapped, dict) else dict(zip(columns, row))
+        if item.get("role_key") == "hod" or item.get("stage_key") == "hod":
+            item["department_scoped"] = 1
+        result.append(item)
     return result
 
 
@@ -263,6 +266,8 @@ def snapshot_request(conn, vendor_id, request_id, legacy_request=None):
     for row in cursor.fetchall():
         mapped = _row_dict(row)
         item = mapped if isinstance(mapped, dict) else dict(zip(columns, row))
+        if item.get("role_key") == "hod" or item.get("stage_key") == "hod":
+            item["department_scoped"] = 1
         dm = item.get("decision_metadata")
         if dm and isinstance(dm, str):
             try:

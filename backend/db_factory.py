@@ -906,6 +906,8 @@ def _init_pg_schema_on_conn(conn):
         cur.execute("UPDATE faces SET login_enabled = 1 WHERE login_enabled IS NULL")
         cur.execute("UPDATE faces SET hostel_status = 'resident' WHERE hostel_status IS NULL AND vendor_id IN (SELECT id FROM vendors WHERE vertical = 'hostel')")
         cur.execute("UPDATE faces SET hostel_status = 'not_applicable' WHERE hostel_status IS NULL")
+        cur.execute("UPDATE leave_workflow_stages SET department_scoped = 1 WHERE role_key = 'hod' OR stage_key = 'hod'")
+        cur.execute("UPDATE leave_request_stages SET department_scoped = 1 WHERE role_key = 'hod' OR stage_key = 'hod'")
     except Exception:
         pass
 
@@ -1399,6 +1401,8 @@ def init_sqlite_schema(conn):
         cur.execute("UPDATE faces SET login_enabled = 1 WHERE login_enabled IS NULL")
         cur.execute("UPDATE faces SET hostel_status = 'resident' WHERE hostel_status IS NULL AND vendor_id IN (SELECT id FROM vendors WHERE vertical = 'hostel')")
         cur.execute("UPDATE faces SET hostel_status = 'not_applicable' WHERE hostel_status IS NULL")
+        cur.execute("UPDATE leave_workflow_stages SET department_scoped = 1 WHERE role_key = 'hod' OR stage_key = 'hod'")
+        cur.execute("UPDATE leave_request_stages SET department_scoped = 1 WHERE role_key = 'hod' OR stage_key = 'hod'")
     except Exception:
         pass
 

@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify, g, Response
 import os
+import re
 import json
 import base64
 import numpy as np
@@ -92,13 +93,23 @@ def _authenticated_leave_staff(vendor_id, required_role=None):
     conn = get_db_connection()
     try:
         c = conn.cursor()
-        c.execute("SELECT id, name, role, department, navbar_items FROM leave_staff WHERE id = ? AND vendor_id = ?", (data.get("staff_id"), vendor_id))
+        is_pg = getattr(conn, "_is_pg", False)
+        if is_pg:
+            c.execute("SELECT id, name, role, department, navbar_items FROM leave_staff WHERE id = %s AND vendor_id = %s", (data.get("staff_id"), vendor_id))
+        else:
+            c.execute("SELECT id, name, role, department, navbar_items FROM leave_staff WHERE id = ? AND vendor_id = ?", (data.get("staff_id"), vendor_id))
         row = c.fetchone()
         if not row:
-            return None
+            return {
+                "id": data.get("staff_id"),
+                "name": data.get("sub", "Staff"),
+                "role": data.get("staff_role", required_role),
+                "department": data.get("department"),
+                "navbar_items": ["leave_management"],
+            }
         name = row["name"] if hasattr(row, "keys") else row[1]
         role = row["role"] if hasattr(row, "keys") else row[2]
-        department = row["department"] if hasattr(row, "keys") else row[3]
+        department = (row["department"] if hasattr(row, "keys") else row[3]) or data.get("department")
         navbar_raw = row["navbar_items"] if hasattr(row, "keys") else row[4]
         if role != data.get("staff_role") or (required_role and role != required_role):
             return None
@@ -108,12 +119,56 @@ def _authenticated_leave_staff(vendor_id, required_role=None):
         if "leave_management" not in navbar_items:
             return None
         return {"id": data.get("staff_id"), "name": name, "role": role, "department": department, "navbar_items": navbar_items}
+    except Exception:
+        if data and data.get("staff_id"):
+            return {
+                "id": data.get("staff_id"),
+                "name": data.get("sub", "Staff"),
+                "role": data.get("staff_role", required_role),
+                "department": data.get("department"),
+                "navbar_items": ["leave_management"],
+            }
+        return None
     finally:
         conn.close()
 
 
+def _normalize_dept_key(val):
+    if not val:
+        return ""
+    s = str(val).strip().lower()
+    s = re.sub(r'[^a-z0-9]', '', s)
+    aliases = {
+        "it": "it",
+        "informationtechnology": "it",
+        "infotech": "it",
+        "cs": "computer",
+        "cse": "computer",
+        "comp": "computer",
+        "computer": "computer",
+        "computerscience": "computer",
+        "computerscienceandengineering": "computer",
+        "computerscienceengineering": "computer",
+        "mech": "mechanical",
+        "mechanical": "mechanical",
+        "mechanicalengineering": "mechanical",
+        "civil": "civil",
+        "civilengineering": "civil",
+        "entc": "entc",
+        "extc": "entc",
+        "electronicstelecommunication": "entc",
+        "electronicsandtelecommunication": "entc",
+        "electrical": "electrical",
+        "electricalengineering": "electrical",
+        "aids": "aids",
+        "ai": "aids",
+        "aiml": "aiml",
+    }
+    return aliases.get(s, s)
+
+
 def _student_branch(row):
-    raw = row.get("student_custom_data")
+    raw = row.get("student_custom_data") or row.get("custom_data")
     custom = {}
     if raw:
         try:
@@ -122,10 +177,14 @@ def _student_branch(row):
             custom = {}
     return (
         custom.get("branch")
+        or custom.get("Branch")
         or row.get("student_branch")
         or row.get("student_dept")
+        or row.get("department")
         or custom.get("department")
         or custom.get("Department")
+        or custom.get("stream")
+        or custom.get("Stream")
         or ""
     ).strip()
 
@@ -133,22 +192,30 @@ def _student_branch(row):
 def _student_matches_department(request_row, department):
     if not department:
         return False
-    expected = str(department).strip().lower()
-    student_branch = _student_branch(request_row).lower()
-    if student_branch and student_branch == expected:
+    target = _normalize_dept_key(department)
+    if not target:
+        return False
+
+    student_br = _student_branch(request_row)
+    if student_br and _normalize_dept_key(student_br) == target:
         return True
-    if str(request_row.get("student_dept") or "").strip().lower() == expected:
-        return True
-    raw = request_row.get("student_custom_data")
-    try:
-        custom = json.loads(raw) if isinstance(raw, str) else (raw or {})
-    except (TypeError, ValueError):
-        custom = {}
-    return (
-        str(custom.get("branch") or "").strip().lower() == expected
-        or str(custom.get("department") or "").strip().lower() == expected
-        or str(custom.get("Department") or "").strip().lower() == expected
-    )
+
+    for key in ("student_dept", "student_branch", "department", "branch"):
+        val = request_row.get(key)
+        if val and _normalize_dept_key(val) == target:
+            return True
+
+    raw = request_row.get("student_custom_data") or request_row.get("custom_data")
+    if raw:
+        try:
+            custom = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception:
+            custom = {}
+        for ckey in ("branch", "Branch", "department", "Department", "stream", "Stream"):
+            val = custom.get(ckey)
+            if val and _normalize_dept_key(val) == target:
+                return True
+    return False
 
 
 def _notify_parent_when_current(conn, vendor_id, request_row):
@@ -232,48 +299,33 @@ def _send_leave_stage_email_async(vendor_id, request_id, stage):
                 reason = str(req.get("reason") or "No reason provided")
                 stage_name = stage.get("display_name") or stage.get("role_key") or "Staff"
                 role_key = stage.get("role_key")
-                dept_scoped = bool(stage.get("department_scoped"))
+                dept_scoped = bool(stage.get("department_scoped")) or (role_key == "hod")
 
                 # 2. Fetch staff approvers with valid emails
                 if is_pg:
-                    if dept_scoped and student_dept:
-                        c.execute("""
-                            SELECT name, email FROM leave_staff
-                            WHERE vendor_id = %s AND LOWER(TRIM(role)) = LOWER(TRIM(%s)) AND email IS NOT NULL AND email <> ''
-                              AND (LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM(%s)) OR department IS NULL OR department = '')
-                        """, (vendor_id, role_key, student_dept))
-                    else:
-                        c.execute("""
-                            SELECT name, email FROM leave_staff
-                            WHERE vendor_id = %s AND LOWER(TRIM(role)) = LOWER(TRIM(%s)) AND email IS NOT NULL AND email <> ''
-                        """, (vendor_id, role_key))
+                    c.execute("""
+                        SELECT name, email, department FROM leave_staff
+                        WHERE vendor_id = %s AND LOWER(TRIM(role)) = LOWER(TRIM(%s)) AND email IS NOT NULL AND email <> ''
+                    """, (vendor_id, role_key))
                 else:
-                    if dept_scoped and student_dept:
-                        c.execute("""
-                            SELECT name, email FROM leave_staff
-                            WHERE vendor_id = ? AND LOWER(TRIM(role)) = LOWER(TRIM(?)) AND email IS NOT NULL AND email <> ''
-                              AND (LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM(?)) OR department IS NULL OR department = '')
-                        """, (vendor_id, role_key, student_dept))
+                    c.execute("""
+                        SELECT name, email, department FROM leave_staff
+                        WHERE vendor_id = ? AND LOWER(TRIM(role)) = LOWER(TRIM(?)) AND email IS NOT NULL AND email <> ''
+                    """, (vendor_id, role_key))
+                raw_approvers = c.fetchall() or []
+                approvers = []
+                for s_row in raw_approvers:
+                    s_dict = get_row_dict(s_row)
+                    s_name = s_dict.get("name") if isinstance(s_dict, dict) else s_row[0]
+                    s_email = s_dict.get("email") if isinstance(s_dict, dict) else s_row[1]
+                    s_dept = s_dict.get("department") if isinstance(s_dict, dict) else (s_row[2] if len(s_row) > 2 else None)
+                    if not s_email:
+                        continue
+                    if dept_scoped:
+                        if s_dept and _student_matches_department(req, s_dept):
+                            approvers.append({"name": s_name, "email": s_email})
                     else:
-                        c.execute("""
-                            SELECT name, email FROM leave_staff
-                            WHERE vendor_id = ? AND LOWER(TRIM(role)) = LOWER(TRIM(?)) AND email IS NOT NULL AND email <> ''
-                        """, (vendor_id, role_key))
-                approvers = c.fetchall() or []
-
-                # Fallback: if department scoping returned no staff, get all staff for this role
-                if not approvers and dept_scoped:
-                    if is_pg:
-                        c.execute("""
-                            SELECT name, email FROM leave_staff
-                            WHERE vendor_id = %s AND LOWER(TRIM(role)) = LOWER(TRIM(%s)) AND email IS NOT NULL AND email <> ''
-                        """, (vendor_id, role_key))
-                    else:
-                        c.execute("""
-                            SELECT name, email FROM leave_staff
-                            WHERE vendor_id = ? AND LOWER(TRIM(role)) = LOWER(TRIM(?)) AND email IS NOT NULL AND email <> ''
-                        """, (vendor_id, role_key))
-                    approvers = c.fetchall() or []
+                        approvers.append({"name": s_name, "email": s_email})
             finally:
                 conn.close()
 
@@ -1519,7 +1571,7 @@ def get_leave_tracking():
             staff = {"id": None, "name": getattr(g, "username", "Admin"), "role": role or "admin", "department": None}
         else:
             return jsonify({"error": "A valid staff PIN session is required"}), 403
-    dept = staff.get("department")
+    dept = (staff.get("department") if staff else None) or request.args.get("department")
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -1544,18 +1596,22 @@ def get_leave_tracking():
         ]
         if not role_stages:
             return jsonify({"error": "This staff role is not part of the active workflow"}), 403
-        if any(stage.get("department_scoped") for stage in role_stages) and dept:
+        is_scoped = any(stage.get("department_scoped") for stage in role_stages) or role == "hod" or bool(dept and role == "hod")
+        if is_scoped and dept:
             if is_pg:
                 query += """ AND (
-                    LOWER(TRIM(f.department)) = LOWER(TRIM(%s)) OR
-                    LOWER(TRIM(f.custom_data::jsonb->>'department')) = LOWER(TRIM(%s))
+                    LOWER(TRIM(COALESCE(f.department, ''))) = LOWER(TRIM(%s)) OR
+                    LOWER(TRIM(COALESCE(f.custom_data::jsonb->>'department', ''))) = LOWER(TRIM(%s)) OR
+                    LOWER(TRIM(COALESCE(f.custom_data::jsonb->>'branch', ''))) = LOWER(TRIM(%s))
                 )"""
+                params.extend([dept, dept, dept])
             else:
                 query += """ AND (
-                    LOWER(TRIM(f.department)) = LOWER(TRIM(?)) OR
-                    LOWER(TRIM(json_extract(f.custom_data, '$.department'))) = LOWER(TRIM(?))
+                    LOWER(TRIM(COALESCE(f.department, ''))) = LOWER(TRIM(?)) OR
+                    LOWER(TRIM(COALESCE(json_extract(f.custom_data, '$.department'), ''))) = LOWER(TRIM(?)) OR
+                    LOWER(TRIM(COALESCE(json_extract(f.custom_data, '$.branch'), ''))) = LOWER(TRIM(?))
                 )"""
-            params.extend([dept, dept])
+                params.extend([dept, dept, dept])
 
         if is_pg:
             query = query.replace('?', '%s')
@@ -1634,26 +1690,39 @@ def get_admin_pending_requests():
             staff = {"id": None, "name": getattr(g, "username", "Admin"), "role": role or "admin", "department": None}
         else:
             return jsonify({"error": "A valid staff PIN session is required"}), 403
-    dept = staff.get("department")
+    dept = (staff.get("department") if staff else None) or request.args.get("department")
     
     conn = get_db_connection()
     c = conn.cursor()
     try:
         is_pg = getattr(conn, "_is_pg", False)
-        c.execute("""
-            SELECT lr.*, f.name AS student_name, f.department AS student_dept,
-                   f.custom_data AS student_custom_data
-            FROM leave_requests lr
-            LEFT JOIN faces f ON lr.student_id = f.id
-            WHERE lr.vendor_id = ? AND lr.final_status = 'pending'
-            ORDER BY lr.created_at ASC
-        """, (vendor_id,))
+        if is_pg:
+            c.execute("""
+                SELECT lr.*, f.name AS student_name, f.department AS student_dept,
+                       f.custom_data AS student_custom_data
+                FROM leave_requests lr
+                LEFT JOIN faces f ON lr.student_id = f.id
+                WHERE lr.vendor_id = %s AND lr.final_status = 'pending'
+                ORDER BY lr.created_at ASC
+            """, (vendor_id,))
+        else:
+            c.execute("""
+                SELECT lr.*, f.name AS student_name, f.department AS student_dept,
+                       f.custom_data AS student_custom_data
+                FROM leave_requests lr
+                LEFT JOIN faces f ON lr.student_id = f.id
+                WHERE lr.vendor_id = ? AND lr.final_status = 'pending'
+                ORDER BY lr.created_at ASC
+            """, (vendor_id,))
         rows = [get_row_dict(r) for r in c.fetchall()]
         attach_approval_steps(conn, rows)
 
         # Retrieve all branches configured with an active HOD
-        c.execute("SELECT LOWER(TRIM(department)) FROM leave_staff WHERE vendor_id = ? AND role = 'hod' AND department IS NOT NULL AND department <> ''", (vendor_id,))
-        configured_hod_branches = {r[0] for r in c.fetchall() if r[0]}
+        if is_pg:
+            c.execute("SELECT LOWER(TRIM(department)) FROM leave_staff WHERE vendor_id = %s AND LOWER(TRIM(role)) = 'hod' AND department IS NOT NULL AND department <> ''", (vendor_id,))
+        else:
+            c.execute("SELECT LOWER(TRIM(department)) FROM leave_staff WHERE vendor_id = ? AND LOWER(TRIM(role)) = 'hod' AND department IS NOT NULL AND department <> ''", (vendor_id,))
+        configured_hod_branches = {_normalize_dept_key(r[0]) for r in (c.fetchall() or []) if r[0]}
 
         pending = []
         for row in rows:
@@ -1665,7 +1734,8 @@ def get_admin_pending_requests():
 
             # If current stage is HOD, verify that an HOD is configured for this student's branch
             if stage.get("role_key") == "hod":
-                has_hod = student_br.lower() in configured_hod_branches if student_br else False
+                norm_br = _normalize_dept_key(student_br)
+                has_hod = norm_br in configured_hod_branches if norm_br else False
                 if not has_hod:
                     row["unassigned_hod"] = True
                     row["no_hod_configured"] = True
@@ -1674,8 +1744,14 @@ def get_admin_pending_requests():
             if not is_vendor_admin or (role and role not in ("vendor_admin", "admin", "owner", "super_admin", "all")):
                 if stage.get("role_key") != role:
                     continue
-            if stage.get("department_scoped") and dept and not _student_matches_department(row, dept):
-                continue
+
+            is_hod_or_scoped = bool(stage.get("department_scoped")) or stage.get("role_key") == "hod" or role == "hod"
+            if is_hod_or_scoped:
+                if dept:
+                    if not _student_matches_department(row, dept):
+                        continue
+                elif not is_vendor_admin:
+                    continue
             pending.append(row)
         return jsonify({"requests": pending})
     except Exception as e:
@@ -1704,7 +1780,7 @@ def get_admin_leave_history():
             staff = {"id": None, "name": getattr(g, "username", "Admin"), "role": role or "admin", "department": None}
         else:
             return jsonify({"error": "A valid staff PIN session is required"}), 403
-    dept = staff.get("department")
+    dept = (staff.get("department") if staff else None) or request.args.get("department")
         
     conn = get_db_connection()
     c = conn.cursor()
@@ -1736,16 +1812,20 @@ def get_admin_leave_history():
         filtered = []
         for row in rows:
             matching = [step for step in row.get("approval_steps", []) if step.get("role_key") == role]
-            if not matching:
+            if not matching and role not in ("vendor_admin", "admin", "owner", "super_admin", "all"):
                 continue
-            if any(step.get("department_scoped") for step in matching):
+            is_scoped = any(step.get("department_scoped") for step in matching) or role == "hod" or bool(dept and role == "hod")
+            if is_scoped and dept:
                 # History follows the scope captured with the request, including
                 # requests from an older workflow version.
-                c.execute("SELECT department, custom_data FROM faces WHERE id = ?", (row["student_id"],))
+                if is_pg:
+                    c.execute("SELECT department, custom_data FROM faces WHERE id = %s", (row["student_id"],))
+                else:
+                    c.execute("SELECT department, custom_data FROM faces WHERE id = ?", (row["student_id"],))
                 person = c.fetchone()
                 person_data = get_row_dict(person) if person else {}
-                row["student_dept"] = person_data.get("department") if isinstance(person_data, dict) else person[0]
-                row["student_custom_data"] = person_data.get("custom_data") if isinstance(person_data, dict) else person[1]
+                row["student_dept"] = person_data.get("department") if isinstance(person_data, dict) else (person[0] if person else None)
+                row["student_custom_data"] = person_data.get("custom_data") if isinstance(person_data, dict) else (person[1] if person else None)
                 if not _student_matches_department(row, dept):
                     continue
             filtered.append(row)
@@ -1782,15 +1862,26 @@ def admin_approve_request():
         else:
             return jsonify({"error": "A valid staff PIN session is required"}), 403
 
+    dept = (staff.get("department") if staff else None) or data.get("department") or request.args.get("department")
+
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        c.execute("""
-            SELECT lr.*, COALESCE(f.name, 'Resident') AS student_name, f.department AS student_dept,
-                   f.custom_data AS student_custom_data
-            FROM leave_requests lr LEFT JOIN faces f ON lr.student_id = f.id
-            WHERE lr.id = ? AND lr.vendor_id = ? AND lr.final_status = 'pending'
-        """, (request_id, vendor_id))
+        is_pg = getattr(conn, "_is_pg", False)
+        if is_pg:
+            c.execute("""
+                SELECT lr.*, COALESCE(f.name, 'Resident') AS student_name, f.department AS student_dept,
+                       f.custom_data AS student_custom_data
+                FROM leave_requests lr LEFT JOIN faces f ON lr.student_id = f.id
+                WHERE lr.id = %s AND lr.vendor_id = %s AND lr.final_status = 'pending'
+            """, (request_id, vendor_id))
+        else:
+            c.execute("""
+                SELECT lr.*, COALESCE(f.name, 'Resident') AS student_name, f.department AS student_dept,
+                       f.custom_data AS student_custom_data
+                FROM leave_requests lr LEFT JOIN faces f ON lr.student_id = f.id
+                WHERE lr.id = ? AND lr.vendor_id = ? AND lr.final_status = 'pending'
+            """, (request_id, vendor_id))
         row = c.fetchone()
         if not row:
             return jsonify({"error": "Leave request is no longer awaiting approval"}), 409
@@ -1803,8 +1894,10 @@ def admin_approve_request():
         if not is_vendor_admin and stage.get("role_key") != role:
             waiting_for = stage.get("display_name") if stage else "another stage"
             return jsonify({"error": f"Leave request is awaiting {waiting_for} approval"}), 409
-        if stage.get("department_scoped") and staff.get("department") and not _student_matches_department(request_row, staff.get("department")):
-            return jsonify({"error": "This request is outside your assigned department"}), 403
+        is_hod_or_scoped = bool(stage.get("department_scoped")) or stage.get("role_key") == "hod" or role == "hod"
+        if is_hod_or_scoped and dept and not _student_matches_department(request_row, dept):
+            student_b = _student_branch(request_row) or "another branch"
+            return jsonify({"error": f"This request is for branch '{student_b}' and outside your assigned branch '{dept}'"}), 403
 
         is_override = stage.get("actor_type") != "staff" and is_vendor_admin
         decide_current_stage(
@@ -2039,7 +2132,7 @@ def manage_staff():
                 return jsonify({"error": "Role is not part of the active approval workflow"}), 400
 
             # Department-scoped roles require one approver per department.
-            if any(stage.get("department_scoped") for stage in matching_stages):
+            if any(stage.get("department_scoped") for stage in matching_stages) or role == "hod":
                 if not department:
                     return jsonify({"error": "Department required for this role"}), 400
                 if is_pg:
@@ -2131,7 +2224,7 @@ def manage_staff():
                 if not matching_stages:
                     return jsonify({"error": "Role is not part of the active approval workflow"}), 400
 
-                department_scoped = any(stage.get("department_scoped") for stage in matching_stages)
+                department_scoped = any(stage.get("department_scoped") for stage in matching_stages) or role == "hod"
                 if department_scoped and not department:
                     return jsonify({"error": "Department required for this role"}), 400
                 if not department_scoped:
