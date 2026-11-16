@@ -201,6 +201,7 @@ const People = () => {
   const [faceFilter, setFaceFilter] = useState('all'); // 'all' | 'registered' | 'missing'
   const [parentFilter, setParentFilter] = useState('all'); // 'all' | 'linked' | 'missing'
   const [activeMenuPersonId, setActiveMenuPersonId] = useState(null);
+  const [menuOpenUpward, setMenuOpenUpward] = useState(false);
   
   // Status Modal State
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
@@ -1892,7 +1893,14 @@ const People = () => {
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          setActiveMenuPersonId(activeMenuPersonId === person.id ? null : person.id);
+                                          if (activeMenuPersonId === person.id) {
+                                            setActiveMenuPersonId(null);
+                                          } else {
+                                            const rect = e.currentTarget.getBoundingClientRect();
+                                            const spaceBelow = window.innerHeight - rect.bottom;
+                                            setMenuOpenUpward(spaceBelow < 280);
+                                            setActiveMenuPersonId(person.id);
+                                          }
                                         }}
                                         className={`p-1.5 rounded-lg transition-all ${
                                           activeMenuPersonId === person.id
@@ -1907,7 +1915,9 @@ const People = () => {
                                       {activeMenuPersonId === person.id && (
                                         <div
                                           onClick={(e) => e.stopPropagation()}
-                                          className="absolute right-0 top-full mt-1 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-30 py-1.5 text-left text-xs divide-y divide-slate-100 animate-in fade-in zoom-in-95 duration-100"
+                                          className={`absolute right-0 ${
+                                            menuOpenUpward ? 'bottom-full mb-1 origin-bottom-right' : 'top-full mt-1 origin-top-right'
+                                          } w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-30 py-1.5 text-left text-xs divide-y divide-slate-100 animate-in fade-in zoom-in-95 duration-100`}
                                         >
                                           <div className="py-1">
                                             <button

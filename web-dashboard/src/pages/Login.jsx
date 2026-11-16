@@ -449,16 +449,6 @@ const Login = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => navigate('/dashboard')}
-                    className="w-full py-2.5 text-sm font-medium rounded-xl transition-colors duration-200"
-                    style={{ color: '#5050A0' }}
-                    onMouseEnter={e => e.currentTarget.style.color = '#C4C4E0'}
-                    onMouseLeave={e => e.currentTarget.style.color = '#5050A0'}
-                  >
-                    Skip to Dashboard
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => { logout(); setStep(0); setPin(''); }}
                     className="w-full py-1.5 text-xs font-medium transition-colors"
                     style={{ color: '#6A6A9F' }}

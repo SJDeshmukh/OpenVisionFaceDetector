@@ -24,6 +24,7 @@ import {
   Bar
 } from 'recharts';
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { API_URL } from '../config';
 import ActivityDashboard from '../components/ActivityDashboard';
@@ -50,6 +51,7 @@ const KpiCard = ({ title, value, subtext, icon: Icon, color }) => (
 );
 
 const Dashboard = () => {
+  const navigate = useNavigate();
   const { user, logout } = useAuth();
   const { socket, joinVendor } = useSocket();
   const [activeTab, setActiveTab] = useState('overview');
@@ -253,7 +255,7 @@ const Dashboard = () => {
             </div>
           </div>
           <button 
-            onClick={() => window.location.hash = '#/leave-management'}
+            onClick={() => navigate('/leave-management?tab=tracking')}
             className="flex items-center gap-2 px-6 py-2.5 bg-amber-600 text-white rounded-lg font-bold hover:bg-amber-700 transition-all shadow-md shadow-amber-100 whitespace-nowrap"
           >
             Track Returns <Zap size={16} />

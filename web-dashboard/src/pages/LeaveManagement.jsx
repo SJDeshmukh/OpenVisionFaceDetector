@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
@@ -34,7 +35,20 @@ const LeaveManagement = () => {
   const isHostel = isHostelVertical(user?.vertical);
   const isRegularUser = (user?.role === 'user' || user?.role === 'student') && !staffSession;
 
-  const [activeTab, setActiveTab] = useState(isRegularUser ? 'new_request' : 'pending');
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab');
+  const validTabs = ['new_request', 'pending', 'tracking', 'parents', 'history', 'workflow'];
+  const [activeTab, setActiveTab] = useState(() => {
+    if (tabParam && validTabs.includes(tabParam)) return tabParam;
+    return isRegularUser ? 'new_request' : 'pending';
+  });
+
+  useEffect(() => {
+    const requestedTab = searchParams.get('tab');
+    if (requestedTab && validTabs.includes(requestedTab)) {
+      setActiveTab(requestedTab);
+    }
+  }, [searchParams]);
   const [requests, setRequests] = useState([]);
   const [trackingData, setTrackingData] = useState([]);
   const [parents, setParents] = useState([]);
@@ -744,7 +758,7 @@ const LeaveManagement = () => {
                   <ShieldCheck size={20} className="text-blue-600 shrink-0" />
                   <div>
                     <p className="font-bold text-slate-800">Workflow Setup (View Only)</p>
-                    <p className="text-xs text-slate-500">The leave approval workflow hierarchy is centrally managed and configured exclusively by SuperAdmin.</p>
+                    <p className="text-xs text-slate-500">The leave approval workflow hierarchy is centrally managed and locked for this organization.</p>
                   </div>
                 </div>
               )}
@@ -838,7 +852,7 @@ const LeaveManagement = () => {
                   </button>
                 ) : (
                   <span className="text-xs font-semibold px-3 py-1.5 bg-slate-100 text-slate-500 rounded-lg border border-slate-200">
-                    Configuration Locked (SuperAdmin Only)
+                    Configuration Locked
                   </span>
                 )}
               </div>

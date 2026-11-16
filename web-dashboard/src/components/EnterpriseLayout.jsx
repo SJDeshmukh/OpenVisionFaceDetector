@@ -5,7 +5,7 @@ import { FRONTEND_BUNDLES, FEATURE_TO_SIDEBAR_MAP, ALWAYS_VISIBLE_ITEMS } from '
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Users, ClipboardList, Video, FileText, Settings,
-  Shield, Bell, Search, LogOut, CalendarClock, DollarSign, Activity,
+  Shield, Bell, LogOut, CalendarClock, DollarSign, Activity,
   Menu, X, FileCheck, Zap, ChevronRight, Moon, Sun, Building2, GraduationCap
 } from 'lucide-react';
 import { Image as ImageIcon } from 'lucide-react';
@@ -331,7 +331,6 @@ export const Sidebar = ({ isOpen, onClose }) => {
 /* ── Topbar ── */
 export const Topbar = ({ onToggleSidebar }) => {
   const { user, staffSession } = useAuth();
-  const [searchFocused, setSearchFocused] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
 
   useEffect(() => {
@@ -368,33 +367,6 @@ export const Topbar = ({ onToggleSidebar }) => {
         <div className="flex items-center gap-2 lg:hidden">
           <BrandLogo className="h-8 w-8" />
           <span className="text-sm font-bold" style={{ color: 'var(--text-main)' }}>TapInX</span>
-        </div>
-
-        <div className="relative flex-1 hidden sm:block">
-          <Search
-            className="absolute left-3.5 top-1/2 -translate-y-1/2 transition-colors duration-200"
-            size={16}
-            style={{ color: searchFocused ? 'var(--text-primary)' : 'var(--text-muted)' }}
-          />
-          <input
-            type="text"
-            placeholder="Search people, reports..."
-            onFocus={() => setSearchFocused(true)}
-            onBlur={() => setSearchFocused(false)}
-            className="input-glow w-full pl-10 pr-4 py-2.5 rounded-xl text-sm transition-all duration-200"
-            style={{
-              background: 'var(--bg-search)',
-              border: `1px solid ${searchFocused ? 'var(--border-search-focus)' : 'var(--border-search)'}`,
-              color: 'var(--text-primary)',
-              outline: 'none',
-            }}
-          />
-          {searchFocused && (
-            <div
-              className="absolute inset-0 rounded-xl pointer-events-none"
-              style={{ boxShadow: '0 0 0 3px rgba(255,255,255,0.06)' }}
-            />
-          )}
         </div>
       </div>
 
