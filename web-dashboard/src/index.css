@@ -687,6 +687,51 @@
   background-color: #2A2D31 !important;
 }
 
+/* Tailwind hover variants carry their own background declarations. Keep neutral
+   rows, menu items and secondary buttons on the dark surface when hovered. */
+:root:not([data-theme="light"]) .app-content :is(
+  [class~="hover:bg-white"],
+  [class~="hover:bg-slate-50"],
+  [class~="hover:bg-slate-50/50"],
+  [class~="hover:bg-slate-50/60"],
+  [class~="hover:bg-slate-50/70"],
+  [class~="hover:bg-slate-50/80"],
+  [class~="hover:bg-slate-50/90"],
+  [class~="hover:bg-gray-50"],
+  [class~="hover:bg-gray-50/50"],
+  [class~="hover:bg-gray-50/80"]
+):hover {
+  background-color: #1B1D20 !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(
+  [class~="hover:bg-slate-100"],
+  [class~="hover:bg-gray-100"],
+  [class~="hover:bg-slate-200"],
+  [class~="hover:bg-slate-200/60"],
+  [class~="hover:bg-gray-200"],
+  [class~="hover:bg-slate-300"],
+  [class~="hover:bg-gray-300"]
+):hover {
+  background-color: #24272B !important;
+}
+
+/* Light gradient stops otherwise remain white on dark cards. */
+:root:not([data-theme="light"]) .app-content [class~="from-white"] {
+  --tw-gradient-from: #111315 var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(17 19 21 / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(
+  [class~="to-blue-50/20"],
+  [class~="to-blue-50/30"],
+  [class~="to-blue-50/50"],
+  [class~="to-blue-50"]
+) {
+  --tw-gradient-to: rgba(29, 39, 55, 0.78) var(--tw-gradient-to-position) !important;
+}
+
 /* Soft semantic tints keep status meaning without introducing bright pastel cards. */
 :root:not([data-theme="light"]) .app-content :is(.bg-blue-50, .bg-blue-100, .bg-sky-100, .bg-cyan-50, .bg-cyan-100),
 :root:not([data-theme="light"]) .app-content [class*="bg-blue-50/"] {
@@ -730,6 +775,29 @@
 
 :root:not([data-theme="light"]) .app-content :is(.text-slate-300, .text-slate-200, .text-slate-100, .text-slate-50, .text-gray-300, .text-gray-200, .text-gray-100) {
   color: #D7D9DC !important;
+}
+
+/* Hover text utilities also need dark equivalents; otherwise labels can turn
+   slate-black while their surrounding control remains dark. */
+:root:not([data-theme="light"]) .app-content :is(
+  [class~="hover:text-slate-950"],
+  [class~="hover:text-slate-900"],
+  [class~="hover:text-slate-800"],
+  [class~="hover:text-slate-700"],
+  [class~="hover:text-gray-900"],
+  [class~="hover:text-gray-800"],
+  [class~="hover:text-gray-700"]
+):hover {
+  color: var(--text-primary) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(
+  [class~="hover:text-slate-600"],
+  [class~="hover:text-slate-500"],
+  [class~="hover:text-gray-600"],
+  [class~="hover:text-gray-500"]
+):hover {
+  color: var(--text-secondary) !important;
 }
 
 :root:not([data-theme="light"]) .app-content :is(.text-blue-500, .text-blue-600, .text-blue-700, .text-blue-800, .text-blue-900, .text-sky-600, .text-sky-800, .text-cyan-300, .text-cyan-400) {
