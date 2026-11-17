@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 500">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070A12"/>
+      <stop offset="0.55" stop-color="#111127"/>
+      <stop offset="1" stop-color="#26163A"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FF5CA8"/>
+      <stop offset="1" stop-color="#7A7DFF"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="75%" cy="45%" r="55%">
+      <stop offset="0" stop-color="#7A7DFF" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#7A7DFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="500" fill="url(#bg)"/>
+  <rect width="1024" height="500" fill="url(#glow)"/>
+  <g transform="translate(650 50) scale(1.55)" stroke="url(#brand)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.95">
+    <path d="M64 48h128M64 48v96M192 208H64M192 208V112"/>
+  </g>
+  <g transform="translate(650 50) scale(1.55)" fill="url(#brand)" opacity="0.95">
+    <rect x="118" y="84" width="20" height="88" rx="3"/>
+    <rect x="92" y="84" width="72" height="18" rx="3"/>
+  </g>
+  <text x="74" y="180" fill="#FFFFFF" font-family="DejaVu Sans, sans-serif" font-size="66" font-weight="700">TapInX</text>
+  <text x="78" y="238" fill="#C6C7DB" font-family="DejaVu Sans, sans-serif" font-size="28">Smart attendance. Clear operations.</text>
+  <rect x="78" y="282" width="96" height="6" rx="3" fill="url(#brand)"/>
+  <text x="78" y="342" fill="#9FA3BB" font-family="DejaVu Sans, sans-serif" font-size="22">Attendance  •  Offline sync  •  Leave  •  Hostel</text>
+</svg>

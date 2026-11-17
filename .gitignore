@@ -34,6 +34,9 @@ web-dashboard/whatsapp_sessions/
 .gradle/
 build/
 local.properties
+keystore.properties
+*.jks
+*.keystore
 
 # Redis
 dump.rdb

@@ -10,4 +10,8 @@
         android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION"
         tools:node="remove" />
 
+    <application
+        android:usesCleartextTraffic="false"
+        tools:replace="android:usesCleartextTraffic" />
+
 </manifest>
