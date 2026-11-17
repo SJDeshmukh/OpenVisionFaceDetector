@@ -53,6 +53,8 @@ const LeaveManagement = () => {
   const [trackingData, setTrackingData] = useState([]);
   const [parents, setParents] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [submissionStage, setSubmissionStage] = useState('idle');
+  const submissionInFlightRef = React.useRef(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [dateFilter, setDateFilter] = useState('');
@@ -346,6 +348,7 @@ const LeaveManagement = () => {
 
   const handleSubmitRequest = async (e) => {
     e.preventDefault();
+    if (submissionInFlightRef.current) return;
     if (formData.start_date && formData.end_date && formData.start_date > formData.end_date) {
       showToast({
         type: 'error',
@@ -355,29 +358,36 @@ const LeaveManagement = () => {
       });
       return;
     }
-    setLoading(true);
-    try {
-      const payload = { ...formData };
-      
-      // Force student_id / employee_id if logged in as user
-      const personId = user?.person_id || user?.id || user?.username;
-      
-      if (isRegularUser && personId) {
-        payload.student_id = personId;
-      }
-      
-      if (!payload.student_id) {
-        showToast({
-          type: 'error',
-          title: 'Account Incomplete',
-          message: `${terminology.person} ID is missing. Please re-login.`,
-          duration: 5000,
-        });
-        setLoading(false);
-        return;
-      }
 
-      await axios.post(`${API_URL}/leave/request`, payload);
+    const payload = { ...formData };
+    const personId = user?.person_id || user?.id || user?.username;
+
+    if (isRegularUser && personId) {
+      payload.student_id = personId;
+    }
+
+    if (!payload.student_id) {
+      showToast({
+        type: 'error',
+        title: 'Account Incomplete',
+        message: `${terminology.person} ID is missing. Please re-login.`,
+        duration: 5000,
+      });
+      return;
+    }
+
+    submissionInFlightRef.current = true;
+    setLoading(true);
+    setSubmissionStage('drafting');
+    const sendingTimer = window.setTimeout(() => setSubmissionStage('sending'), 420);
+
+    try {
+      await Promise.all([
+        axios.post(`${API_URL}/leave/request`, payload),
+        new Promise(resolve => window.setTimeout(resolve, 720)),
+      ]);
+      window.clearTimeout(sendingTimer);
+      setSubmissionStage('sent');
       showToast({
         type: 'success',
         title: 'Leave Application Submitted',
@@ -392,8 +402,12 @@ const LeaveManagement = () => {
         start_time: '10:00',
         end_time: '18:00'
       });
+      await new Promise(resolve => window.setTimeout(resolve, 1100));
+      setSubmissionStage('idle');
       if (isRegularUser) setActiveTab('history');
     } catch (err) {
+      window.clearTimeout(sendingTimer);
+      setSubmissionStage('idle');
       const errData = err.response?.data || {};
       if (errData.error_code === 'LEAVE_OVERLAP' && errData.overlap) {
         const ov = errData.overlap;
@@ -419,6 +433,7 @@ const LeaveManagement = () => {
         });
       }
     } finally {
+      submissionInFlightRef.current = false;
       setLoading(false);
     }
   };
@@ -518,6 +533,42 @@ const LeaveManagement = () => {
 
   return (
     <div className="space-y-6">
+      {submissionStage !== 'idle' && (
+        <div className="leave-submit-overlay" role="status" aria-live="polite" aria-busy={submissionStage !== 'sent'}>
+          <div className="leave-submit-feedback" data-stage={submissionStage}>
+            <div className="leave-submit-visual" aria-hidden="true">
+              {submissionStage === 'sent' ? (
+                <span className="leave-submit-check">
+                  <CheckCircle size={48} strokeWidth={2.4} />
+                </span>
+              ) : (
+                <span className="leave-mail-loader" />
+              )}
+            </div>
+            <div className="leave-submit-copy">
+              <p className="leave-submit-kicker">
+                {submissionStage === 'sent' ? 'Successfully submitted' : 'Leave application'}
+              </p>
+              <h2>
+                {submissionStage === 'drafting' && 'Drafting your request'}
+                {submissionStage === 'sending' && 'Sending for approval'}
+                {submissionStage === 'sent' && 'Leave request sent'}
+              </h2>
+              <p>
+                {submissionStage === 'drafting' && 'Preparing your dates and approval route.'}
+                {submissionStage === 'sending' && 'Submitting to your configured approval chain.'}
+                {submissionStage === 'sent' && 'Your request is now ready for the first approver.'}
+              </p>
+            </div>
+            <div className="leave-submit-progress" aria-hidden="true">
+              <span className="is-complete" />
+              <span className={submissionStage !== 'drafting' ? 'is-complete' : ''} />
+              <span className={submissionStage === 'sent' ? 'is-complete' : ''} />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Interactive Modern Toast / Alert Notification */}
       {toast && (
         <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[200] max-w-lg w-[calc(100%-2rem)] px-2 animate-in fade-in slide-in-from-top-4 duration-200">
