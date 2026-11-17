@@ -203,6 +203,8 @@ export const Sidebar = ({ isOpen, onClose }) => {
         } lg:translate-x-0`}
         style={{
           background: 'var(--bg-sidebar)',
+          backdropFilter: 'blur(28px) saturate(145%)',
+          WebkitBackdropFilter: 'blur(28px) saturate(145%)',
           borderRight: '1px solid var(--border-sidebar)',
           boxShadow: 'var(--shadow-sidebar)',
         }}

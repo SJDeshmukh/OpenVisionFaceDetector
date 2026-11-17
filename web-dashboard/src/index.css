@@ -49,52 +49,53 @@
 /* ─── Variables ─────────────────────────────────────────── */
 :root {
   color-scheme: dark;
-  --bg-body: #08090A;
+  --bg-body: #03090B;
   --text-main: #F7F7F8;
-  --bg-sidebar: #0B0C0D;
-  --border-sidebar: rgba(255, 255, 255, 0.1);
-  --shadow-sidebar: none;
-  --bg-topbar: rgba(8, 9, 10, 0.9);
-  --shadow-topbar: none;
+  --bg-sidebar: rgba(4, 11, 14, 0.78);
+  --border-sidebar: rgba(128, 237, 226, 0.12);
+  --shadow-sidebar: 18px 0 60px rgba(0, 0, 0, 0.24);
+  --bg-topbar: rgba(4, 10, 13, 0.66);
+  --shadow-topbar: 0 14px 42px rgba(0, 0, 0, 0.2);
   --text-muted: #9B9EA3;
   --text-muted-hover: #fff;
-  --bg-nav-active: rgba(255,255,255,0.075);
+  --bg-nav-active: linear-gradient(90deg, rgba(124, 58, 255, 0.2) 0%, rgba(30, 211, 197, 0.08) 100%);
   --text-nav-active: #FFFFFF;
   --text-nav-icon-active: #B69AFF;
-  --bg-nav-hover: rgba(255,255,255,0.045);
+  --bg-nav-hover: rgba(111, 229, 219, 0.055);
   --text-nav-hover: #F5F5F5;
   --bg-btn-ghost: rgba(255,255,255,0.045);
   --bg-btn-ghost-hover: rgba(255,255,255,0.085);
-  --bg-search: #16181B;
-  --border-search: rgba(255,255,255,0.11);
+  --bg-search: rgba(11, 23, 27, 0.76);
+  --border-search: rgba(128, 237, 226, 0.13);
   --border-search-focus: rgba(182,154,255,0.72);
-  --border-top: rgba(255,255,255,0.085);
+  --border-top: rgba(128, 237, 226, 0.105);
   --overlay-bg: rgba(0,0,0,0.82);
-  --user-chip-bg: rgba(255,255,255,0.045);
+  --user-chip-bg: rgba(117, 230, 220, 0.055);
   --user-chip-text: #9B9EA3;
   --brand-subtitle: #9B7BFF;
   --status-live: #00E87A;
   --focus-ring: rgba(124, 58, 255, 0.22);
-  --surface-hover: #1B1D20;
-  --shadow-card: 0 18px 55px rgba(0, 0, 0, 0.32);
-  --glass-card-bg: rgba(17, 19, 21, 0.72);
-  --glass-surface-bg: rgba(11, 12, 13, 0.78);
-  --glass-border: rgba(255, 255, 255, 0.13);
-  --glass-border-hover: rgba(182, 154, 255, 0.28);
-  --glass-highlight: rgba(255, 255, 255, 0.045);
-  --glass-shadow: 0 18px 54px rgba(0, 0, 0, 0.28);
-  --ambient-primary: rgba(124, 58, 255, 0.12);
-  --ambient-secondary: rgba(6, 214, 255, 0.055);
+  --surface-hover: rgba(18, 39, 43, 0.92);
+  --shadow-card: 0 20px 64px rgba(0, 0, 0, 0.36);
+  --glass-card-bg: rgba(7, 16, 19, 0.7);
+  --glass-surface-bg: rgba(5, 13, 16, 0.78);
+  --glass-border: rgba(132, 239, 228, 0.14);
+  --glass-border-hover: rgba(132, 239, 228, 0.3);
+  --glass-highlight: rgba(215, 255, 250, 0.055);
+  --glass-shadow: 0 20px 62px rgba(0, 0, 0, 0.34), 0 8px 30px rgba(0, 181, 176, 0.045);
+  --ambient-primary: rgba(27, 220, 201, 0.16);
+  --ambient-secondary: rgba(124, 58, 255, 0.14);
+  --ambient-tertiary: rgba(6, 112, 145, 0.1);
   
   /* Dynamic Component Variables */
-  --bg-card: #111315;
-  --bg-card-alt: #16181B;
-  --border-card: rgba(255, 255, 255, 0.105);
+  --bg-card: #091316;
+  --bg-card-alt: #0D1A1E;
+  --border-card: rgba(132, 239, 228, 0.12);
   --text-primary: #F7F7F8;
   --text-secondary: #AEB1B6;
   --text-tertiary: #888C92;
-  --bg-input: #16181B;
-  --border-strong: rgba(255, 255, 255, 0.16);
+  --bg-input: #0D1A1E;
+  --border-strong: rgba(132, 239, 228, 0.2);
 }
 
 [data-theme="light"] {
@@ -135,6 +136,7 @@
   --glass-shadow: 0 18px 48px rgba(71, 85, 105, 0.11);
   --ambient-primary: rgba(124, 58, 255, 0.10);
   --ambient-secondary: rgba(14, 165, 233, 0.09);
+  --ambient-tertiary: rgba(14, 165, 233, 0.045);
   
   /* Dynamic Component Variables */
   --bg-card: #FFFFFF;
@@ -324,15 +326,15 @@
  * the same quiet charcoal surfaces and readable text hierarchy used by the
  * login screen, while retaining color as a restrained status cue.
  */
-:root:not([data-theme="light"]) .bg-slate-950 { background-color: #08090A !important; }
-:root:not([data-theme="light"]) .bg-slate-900 { background-color: #0C0D0F !important; }
-:root:not([data-theme="light"]) .bg-slate-800 { background-color: #111315 !important; }
-:root:not([data-theme="light"]) .bg-slate-700 { background-color: #1B1D20 !important; }
+:root:not([data-theme="light"]) .bg-slate-950 { background-color: #03090B !important; }
+:root:not([data-theme="light"]) .bg-slate-900 { background-color: #061013 !important; }
+:root:not([data-theme="light"]) .bg-slate-800 { background-color: var(--bg-card) !important; }
+:root:not([data-theme="light"]) .bg-slate-700 { background-color: var(--surface-hover) !important; }
 :root:not([data-theme="light"]) [class~="bg-slate-950/65"],
 :root:not([data-theme="light"]) [class~="bg-slate-950/60"],
-:root:not([data-theme="light"]) [class~="bg-slate-950/55"] { background-color: rgba(8, 9, 10, 0.88) !important; }
+:root:not([data-theme="light"]) [class~="bg-slate-950/55"] { background-color: rgba(3, 9, 11, 0.88) !important; }
 :root:not([data-theme="light"]) [class~="bg-slate-900/95"],
-:root:not([data-theme="light"]) [class~="bg-slate-900/80"] { background-color: rgba(12, 13, 15, 0.95) !important; }
+:root:not([data-theme="light"]) [class~="bg-slate-900/80"] { background-color: rgba(6, 16, 19, 0.95) !important; }
 :root:not([data-theme="light"]) .border-slate-800,
 :root:not([data-theme="light"]) .border-slate-700 { border-color: rgba(255, 255, 255, 0.1) !important; }
 :root:not([data-theme="light"]) .text-slate-400 { color: #9B9EA3 !important; }
@@ -602,11 +604,35 @@
 
 /* Application shell ------------------------------------------------------ */
 .app-shell {
+  position: relative;
+  isolation: isolate;
+  overflow-x: hidden;
   background:
-    radial-gradient(circle at 76% -12%, var(--ambient-primary), transparent 34rem),
-    radial-gradient(circle at 12% 82%, var(--ambient-secondary), transparent 31rem),
+    radial-gradient(ellipse 48rem 32rem at 30% -8%, var(--ambient-primary), transparent 70%),
+    radial-gradient(ellipse 42rem 36rem at 102% 34%, var(--ambient-secondary), transparent 72%),
+    radial-gradient(ellipse 38rem 32rem at 7% 92%, var(--ambient-tertiary), transparent 72%),
     var(--bg-body);
   background-attachment: fixed;
+}
+
+.app-shell::before {
+  content: '';
+  position: fixed;
+  z-index: -1;
+  inset: -18%;
+  pointer-events: none;
+  background:
+    linear-gradient(118deg, transparent 24%, rgba(49, 221, 207, 0.045) 39%, transparent 54%),
+    radial-gradient(ellipse 15% 62% at 21% 38%, rgba(43, 225, 209, 0.11), transparent 70%),
+    radial-gradient(ellipse 14% 58% at 78% 56%, rgba(124, 58, 255, 0.095), transparent 72%);
+  filter: blur(20px);
+  transform: rotate(-4deg) scale(1.08);
+  animation: liquidAmbient 22s ease-in-out infinite alternate;
+}
+
+@keyframes liquidAmbient {
+  0% { transform: translate3d(-1.5%, -1%, 0) rotate(-4deg) scale(1.08); }
+  100% { transform: translate3d(1.5%, 1%, 0) rotate(2deg) scale(1.12); }
 }
 
 .app-content {
@@ -702,7 +728,7 @@
 :root:not([data-theme="light"]) .app-content select:disabled,
 :root:not([data-theme="light"]) .app-content textarea:disabled {
   color: var(--text-tertiary) !important;
-  background-color: #111315 !important;
+  background-color: var(--bg-card) !important;
   opacity: 0.72;
 }
 
@@ -714,21 +740,21 @@
 
 /* Neutral surfaces follow the login card and field hierarchy. */
 :root:not([data-theme="light"]) .app-content :is(.bg-white, .bg-slate-50, .bg-gray-50) {
-  background-color: #111315 !important;
+  background-color: var(--bg-card) !important;
 }
 
 :root:not([data-theme="light"]) .app-content :is(.bg-slate-100, .bg-gray-100),
 :root:not([data-theme="light"]) .app-content :is([class~="bg-slate-50/90"], [class~="bg-slate-50/80"], [class~="bg-slate-50/70"], [class~="bg-slate-50/60"], [class~="bg-slate-50/50"]),
 :root:not([data-theme="light"]) .app-content :is([class~="bg-white/95"], [class~="bg-white/90"], [class~="bg-white/70"], [class~="bg-white/50"]) {
-  background-color: #16181B !important;
+  background-color: var(--bg-card-alt) !important;
 }
 
 :root:not([data-theme="light"]) .app-content :is(.bg-slate-200, .bg-gray-200) {
-  background-color: #202226 !important;
+  background-color: #16282D !important;
 }
 
 :root:not([data-theme="light"]) .app-content :is(.bg-slate-300, .bg-gray-300, .bg-slate-400) {
-  background-color: #2A2D31 !important;
+  background-color: #20353A !important;
 }
 
 /* Tailwind hover variants carry their own background declarations. Keep neutral
@@ -745,7 +771,7 @@
   [class~="hover:bg-gray-50/50"],
   [class~="hover:bg-gray-50/80"]
 ):hover {
-  background-color: #1B1D20 !important;
+  background-color: var(--surface-hover) !important;
 }
 
 :root:not([data-theme="light"]) .app-content :is(
@@ -757,13 +783,13 @@
   [class~="hover:bg-slate-300"],
   [class~="hover:bg-gray-300"]
 ):hover {
-  background-color: #24272B !important;
+  background-color: #183137 !important;
 }
 
 /* Light gradient stops otherwise remain white on dark cards. */
 :root:not([data-theme="light"]) .app-content [class~="from-white"] {
-  --tw-gradient-from: #111315 var(--tw-gradient-from-position) !important;
-  --tw-gradient-to: rgb(17 19 21 / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-from: rgba(7, 16, 19, 0.8) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(7 16 19 / 0) var(--tw-gradient-to-position) !important;
   --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
 }
 
@@ -773,7 +799,7 @@
   [class~="to-blue-50/50"],
   [class~="to-blue-50"]
 ) {
-  --tw-gradient-to: rgba(29, 39, 55, 0.78) var(--tw-gradient-to-position) !important;
+  --tw-gradient-to: rgba(18, 47, 55, 0.78) var(--tw-gradient-to-position) !important;
 }
 
 /* Soft semantic tints keep status meaning without introducing bright pastel cards. */
@@ -896,7 +922,7 @@
 
 :root:not([data-theme="light"]) .app-content table thead {
   color: var(--text-secondary);
-  background-color: #16181B !important;
+  background-color: var(--bg-card-alt) !important;
 }
 
 :root:not([data-theme="light"]) .app-content table tbody tr {
@@ -909,7 +935,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .app-content > * { animation: none; }
+  .app-content > *,
+  .app-shell::before { animation: none; }
 }
 
 /* Toggle Switch */
