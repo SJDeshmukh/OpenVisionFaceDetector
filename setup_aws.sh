@@ -1466,6 +1466,7 @@ env_set DB_TYPE "postgres"
 env_set REDIS_URL "$REDIS_URL"
 env_set CELERY_BROKER_URL "$REDIS_URL"
 env_set CELERY_RESULT_BACKEND "$REDIS_URL"
+env_set FIREBASE_PROJECT_ID "${FIREBASE_PROJECT_ID:-tapinx-e6718}"
 if [ "$ENABLE_AMQP" = "1" ]; then
     log "Installing and configuring local-only RabbitMQ"
     ENV_FILE="$ENV_FILE" bash "$SCRIPT_DIR/scripts/configure-rabbitmq.sh"

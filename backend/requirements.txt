@@ -57,3 +57,6 @@ qrcode
 
 # Firebase push notifications (FCM v1 API)
 firebase-admin
+# Direct Firebase ID-token verification when no Admin private key is deployed.
+google-auth
+CacheControl

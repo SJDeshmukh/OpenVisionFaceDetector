@@ -10,18 +10,23 @@ Google login is available on the web sign-in screen for pre-registered hostel st
    - `tapinx.in`
    - `www.tapinx.in`
    - the development hostname when testing locally
-4. In **Project settings → Service accounts**, generate a private key for the backend. Never commit this JSON file.
+4. A service-account private key is not required for Google login token
+   verification. Generate one only when the deployment also needs privileged
+   Firebase Admin operations such as FCM v1, and never commit it.
 
 ## Backend server
 
-Place the service-account JSON in a directory readable only by the backend service user. Add these values to `backend/.env`:
+Add the Firebase project ID to `backend/.env`:
 
 ```dotenv
 FIREBASE_PROJECT_ID=tapinx-e6718
-GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/firebase-service-account.json
 ```
 
-`FIREBASE_CREDENTIALS_JSON` may be used instead of a file path when the deployment platform stores multiline JSON secrets. Restart `openvision-backend` after changing the environment. The same Firebase Admin configuration can be reused by FCM notifications.
+Restart `openvision-backend` after changing the environment. Google login uses
+Google's cached public signing certificates and does not need a private key.
+For FCM v1, additionally set `GOOGLE_APPLICATION_CREDENTIALS` to a protected
+service-account JSON file, or provide `FIREBASE_CREDENTIALS_JSON` through the
+deployment secret manager.
 
 ## Account matching rules
 

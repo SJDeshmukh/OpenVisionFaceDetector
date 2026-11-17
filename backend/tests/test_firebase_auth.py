@@ -60,6 +60,112 @@ def test_google_token_rejects_wrong_provider_or_unverified_email(monkeypatch, pr
         firebase_auth_service.verify_google_firebase_token("valid-token")
 
 
+def test_google_token_uses_public_certificates_without_admin_credentials(monkeypatch):
+    decoded = {
+        "sub": "google-subject-2",
+        "email": "resident@example.com",
+        "email_verified": True,
+        "firebase": {"sign_in_provider": "google.com"},
+    }
+    monkeypatch.setitem(sys.modules, "firebase_admin", _firebase_module(decoded))
+    monkeypatch.setattr(
+        firebase_auth_service,
+        "_firebase_app",
+        lambda: (_ for _ in ()).throw(
+            firebase_auth_service.FirebaseAuthConfigurationError("missing key")
+        ),
+    )
+    monkeypatch.setattr(
+        firebase_auth_service,
+        "_verify_with_public_certificates",
+        lambda token: decoded,
+    )
+
+    identity = firebase_auth_service.verify_google_firebase_token("valid-token")
+
+    assert identity["subject"] == "google-subject-2"
+    assert identity["email"] == "resident@example.com"
+
+
+def test_public_certificate_claims_require_firebase_issuer_and_auth_time():
+    valid = {
+        "iss": "https://securetoken.google.com/tapinx-e6718",
+        "sub": "firebase-user-1",
+        "auth_time": 1_700_000_000,
+    }
+    firebase_auth_service._validate_public_certificate_claims(
+        valid,
+        "tapinx-e6718",
+        now=1_700_000_010,
+    )
+
+    invalid_issuer = {**valid, "iss": "https://securetoken.google.com/other-project"}
+    with pytest.raises(firebase_auth_service.FirebaseAuthTokenError, match="issuer"):
+        firebase_auth_service._validate_public_certificate_claims(
+            invalid_issuer,
+            "tapinx-e6718",
+            now=1_700_000_010,
+        )
+
+    future_auth = {**valid, "auth_time": 1_700_000_100}
+    with pytest.raises(firebase_auth_service.FirebaseAuthTokenError, match="not active"):
+        firebase_auth_service._validate_public_certificate_claims(
+            future_auth,
+            "tapinx-e6718",
+            now=1_700_000_010,
+        )
+
+
+@pytest.mark.parametrize("subject", ["", "x" * 129])
+def test_public_certificate_claims_reject_invalid_subject(subject):
+    with pytest.raises(firebase_auth_service.FirebaseAuthTokenError, match="identifier"):
+        firebase_auth_service._validate_public_certificate_claims(
+            {
+                "iss": "https://securetoken.google.com/tapinx-e6718",
+                "sub": subject,
+                "auth_time": 1_700_000_000,
+            },
+            "tapinx-e6718",
+            now=1_700_000_010,
+        )
+
+
+def test_public_certificate_verifier_pins_project_audience(monkeypatch):
+    calls = {}
+
+    class FakeGoogleIdToken:
+        @staticmethod
+        def verify_firebase_token(token, request, **kwargs):
+            calls.update({"token": token, "request": request, **kwargs})
+            return {
+                "iss": "https://securetoken.google.com/tapinx-e6718",
+                "sub": "firebase-user-2",
+                "auth_time": 1,
+                "email": "resident@example.com",
+                "email_verified": True,
+                "firebase": {"sign_in_provider": "google.com"},
+            }
+
+    google_module = types.ModuleType("google")
+    oauth2_module = types.ModuleType("google.oauth2")
+    oauth2_module.id_token = FakeGoogleIdToken
+    google_module.oauth2 = oauth2_module
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setitem(sys.modules, "google.oauth2", oauth2_module)
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "tapinx-e6718")
+    monkeypatch.setattr(firebase_auth_service, "_public_certificate_request", lambda: "request")
+
+    decoded = firebase_auth_service._verify_with_public_certificates("signed-token")
+
+    assert decoded["sub"] == "firebase-user-2"
+    assert calls == {
+        "token": "signed-token",
+        "request": "request",
+        "audience": "tapinx-e6718",
+        "clock_skew_in_seconds": 60,
+    }
+
+
 def _account_database():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
