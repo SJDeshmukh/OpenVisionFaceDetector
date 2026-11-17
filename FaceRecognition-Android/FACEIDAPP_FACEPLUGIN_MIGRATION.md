@@ -46,11 +46,11 @@ not copied: replacing the data layer would disconnect existing person, tenant,
 attendance, and sync records. The detection, liveness, alignment, enrollment,
 and matching logic has been replaced.
 
-## Legacy application identifier
+## Application identifiers
 
-The Android `applicationId` still contains `com.faceplugin...`. It is only the
-published app identity used by Android/Firebase and is not an SDK dependency.
-Changing it would install a different application and break upgrade continuity.
+The Java/Kotlin namespace remains `com.faceplugin...` because it is a source-code
+namespace and is not an SDK dependency. Only the TapInX flavor uses the branded
+application ID `tapinx.com`; the other flavors retain their existing identities.
 
 The old AAR files and their Gradle dependency have been removed, so their code,
 native libraries, and model assets are not packaged in the APK.

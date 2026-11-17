@@ -6,7 +6,7 @@ installation permissions, and blocks cleartext HTTP traffic.
 
 ## One-time setup
 
-1. Keep the application ID `com.faceplugin.facerecognitionsdk`. Google Play
+1. Keep the application ID `tapinx.com`. Google Play
    treats the application ID as permanent after the first app is created.
 2. Store the upload key outside source control and back it up securely.
 3. Copy `keystore.properties.example` to `keystore.properties` and enter the
