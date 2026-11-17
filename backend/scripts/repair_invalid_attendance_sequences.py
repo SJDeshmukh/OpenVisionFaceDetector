@@ -14,8 +14,17 @@ After reviewing the JSON output, apply the exact same scope explicitly:
 import argparse
 from datetime import date
 import json
+from pathlib import Path
+import sys
 
-from db_factory import get_db_connection
+
+# Executing ``python scripts/<name>.py`` makes ``scripts`` the first import
+# directory. Add the backend root explicitly so local modules resolve exactly
+# as they do under Gunicorn and pytest.
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
 from services.attendance_sequence_repair_service import (
     apply_findings,
     find_invalid_transitions,
@@ -45,6 +54,10 @@ def main():
         parser.error("--start-date cannot be after --end-date")
     if args.apply and not str(args.actor or "").strip():
         parser.error("--actor is required with --apply")
+
+    # Keep the database dependency lazy so help/argument validation can run in
+    # lightweight maintenance environments.
+    from db_factory import get_db_connection
 
     connection = get_db_connection()
     cursor = connection.cursor()
