@@ -48,8 +48,9 @@
 
 /* ─── Variables ─────────────────────────────────────────── */
 :root {
+  color-scheme: dark;
   --bg-body: #08090A;
-  --text-main: #FFFFFF;
+  --text-main: #F7F7F8;
   --bg-sidebar: #0B0C0D;
   --border-sidebar: rgba(255, 255, 255, 0.1);
   --shadow-sidebar: none;
@@ -64,7 +65,7 @@
   --text-nav-hover: #F5F5F5;
   --bg-btn-ghost: rgba(255,255,255,0.045);
   --bg-btn-ghost-hover: rgba(255,255,255,0.085);
-  --bg-search: rgba(255,255,255,0.035);
+  --bg-search: #16181B;
   --border-search: rgba(255,255,255,0.11);
   --border-search-focus: rgba(182,154,255,0.72);
   --border-top: rgba(255,255,255,0.085);
@@ -74,18 +75,22 @@
   --brand-subtitle: #9B7BFF;
   --status-live: #00E87A;
   --focus-ring: rgba(124, 58, 255, 0.22);
-  --surface-hover: #1A1C1F;
-  --shadow-card: 0 18px 55px rgba(0, 0, 0, 0.24);
+  --surface-hover: #1B1D20;
+  --shadow-card: 0 18px 55px rgba(0, 0, 0, 0.32);
   
   /* Dynamic Component Variables */
   --bg-card: #111315;
   --bg-card-alt: #16181B;
   --border-card: rgba(255, 255, 255, 0.105);
-  --text-primary: #FFFFFF;
-  --text-secondary: #A8ABB0;
+  --text-primary: #F7F7F8;
+  --text-secondary: #AEB1B6;
+  --text-tertiary: #888C92;
+  --bg-input: #16181B;
+  --border-strong: rgba(255, 255, 255, 0.16);
 }
 
 [data-theme="light"] {
+  color-scheme: light;
   --bg-body: #F8FAFC;
   --text-main: #0F172A;
   --bg-sidebar: #FFFFFF;
@@ -121,6 +126,9 @@
   --border-card: #E2E8F0;
   --text-primary: #0F172A;
   --text-secondary: #64748B;
+  --text-tertiary: #64748B;
+  --bg-input: #FFFFFF;
+  --border-strong: #CBD5E1;
 }
 
 /* ─── Base ─────────────────────────────────────────── */
@@ -293,19 +301,26 @@
   outline: none;
 }
 
-/* Keep dark mode achromatic even where components use Tailwind slate utilities. */
-:root:not([data-theme="light"]) .bg-slate-950 { background-color: #050505 !important; }
-:root:not([data-theme="light"]) .bg-slate-900 { background-color: #0A0A0A !important; }
-:root:not([data-theme="light"]) .bg-slate-800 { background-color: #171717 !important; }
-:root:not([data-theme="light"]) .bg-slate-700 { background-color: #262626 !important; }
+/*
+ * Dark compatibility layer
+ *
+ * Older screens use light Tailwind utilities directly. Map those utilities to
+ * the same quiet charcoal surfaces and readable text hierarchy used by the
+ * login screen, while retaining color as a restrained status cue.
+ */
+:root:not([data-theme="light"]) .bg-slate-950 { background-color: #08090A !important; }
+:root:not([data-theme="light"]) .bg-slate-900 { background-color: #0C0D0F !important; }
+:root:not([data-theme="light"]) .bg-slate-800 { background-color: #111315 !important; }
+:root:not([data-theme="light"]) .bg-slate-700 { background-color: #1B1D20 !important; }
 :root:not([data-theme="light"]) [class~="bg-slate-950/65"],
-:root:not([data-theme="light"]) [class~="bg-slate-950/55"] { background-color: rgba(5, 5, 5, 0.78) !important; }
+:root:not([data-theme="light"]) [class~="bg-slate-950/60"],
+:root:not([data-theme="light"]) [class~="bg-slate-950/55"] { background-color: rgba(8, 9, 10, 0.88) !important; }
 :root:not([data-theme="light"]) [class~="bg-slate-900/95"],
-:root:not([data-theme="light"]) [class~="bg-slate-900/80"] { background-color: rgba(10, 10, 10, 0.94) !important; }
+:root:not([data-theme="light"]) [class~="bg-slate-900/80"] { background-color: rgba(12, 13, 15, 0.95) !important; }
 :root:not([data-theme="light"]) .border-slate-800,
 :root:not([data-theme="light"]) .border-slate-700 { border-color: rgba(255, 255, 255, 0.1) !important; }
-:root:not([data-theme="light"]) .text-slate-400 { color: #A3A3A3 !important; }
-:root:not([data-theme="light"]) .text-slate-300 { color: #D4D4D4 !important; }
+:root:not([data-theme="light"]) .text-slate-400 { color: #9B9EA3 !important; }
+:root:not([data-theme="light"]) .text-slate-300 { color: #D7D9DC !important; }
 
 /* Light mode text contrast enhancements across all pages */
 [data-theme="light"] .text-slate-400,
@@ -612,18 +627,168 @@
   background: rgba(255, 255, 255, 0.022);
 }
 
-:root:not([data-theme="light"]) .app-content input:not([type="checkbox"]):not([type="radio"]),
+:root:not([data-theme="light"]) .app-content input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
 :root:not([data-theme="light"]) .app-content select,
 :root:not([data-theme="light"]) .app-content textarea {
   color: var(--text-primary);
+  background-color: var(--bg-input) !important;
+  border-color: var(--border-card) !important;
 }
 
-:root:not([data-theme="light"]) .app-content input:not([type="checkbox"]):not([type="radio"]):focus,
+:root:not([data-theme="light"]) .app-content input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]):focus,
 :root:not([data-theme="light"]) .app-content select:focus,
 :root:not([data-theme="light"]) .app-content textarea:focus {
   border-color: rgba(182, 154, 255, 0.68) !important;
   box-shadow: 0 0 0 3px var(--focus-ring) !important;
   outline: none;
+}
+
+:root:not([data-theme="light"]) .app-content input::placeholder,
+:root:not([data-theme="light"]) .app-content textarea::placeholder {
+  color: #73777D !important;
+  opacity: 1;
+}
+
+:root:not([data-theme="light"]) .app-content select option {
+  color: var(--text-primary);
+  background: var(--bg-input);
+}
+
+:root:not([data-theme="light"]) .app-content input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]):disabled,
+:root:not([data-theme="light"]) .app-content select:disabled,
+:root:not([data-theme="light"]) .app-content textarea:disabled {
+  color: var(--text-tertiary) !important;
+  background-color: #111315 !important;
+  opacity: 0.72;
+}
+
+:root:not([data-theme="light"]) .app-content input[type="date"]::-webkit-calendar-picker-indicator,
+:root:not([data-theme="light"]) .app-content input[type="time"]::-webkit-calendar-picker-indicator,
+:root:not([data-theme="light"]) .app-content input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.82);
+}
+
+/* Neutral surfaces follow the login card and field hierarchy. */
+:root:not([data-theme="light"]) .app-content :is(.bg-white, .bg-slate-50, .bg-gray-50) {
+  background-color: #111315 !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.bg-slate-100, .bg-gray-100),
+:root:not([data-theme="light"]) .app-content :is([class~="bg-slate-50/90"], [class~="bg-slate-50/80"], [class~="bg-slate-50/70"], [class~="bg-slate-50/60"], [class~="bg-slate-50/50"]),
+:root:not([data-theme="light"]) .app-content :is([class~="bg-white/95"], [class~="bg-white/90"], [class~="bg-white/70"], [class~="bg-white/50"]) {
+  background-color: #16181B !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.bg-slate-200, .bg-gray-200) {
+  background-color: #202226 !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.bg-slate-300, .bg-gray-300, .bg-slate-400) {
+  background-color: #2A2D31 !important;
+}
+
+/* Soft semantic tints keep status meaning without introducing bright pastel cards. */
+:root:not([data-theme="light"]) .app-content :is(.bg-blue-50, .bg-blue-100, .bg-sky-100, .bg-cyan-50, .bg-cyan-100),
+:root:not([data-theme="light"]) .app-content [class*="bg-blue-50/"] {
+  background-color: rgba(83, 147, 255, 0.12) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.bg-indigo-50, .bg-indigo-100, .bg-violet-50, .bg-violet-100, .bg-purple-50, .bg-purple-100, .bg-fuchsia-50, .bg-fuchsia-100, .bg-pink-100),
+:root:not([data-theme="light"]) .app-content [class*="bg-indigo-50/"],
+:root:not([data-theme="light"]) .app-content [class*="bg-violet-50/"] {
+  background-color: rgba(124, 58, 255, 0.13) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.bg-emerald-50, .bg-emerald-100, .bg-green-50, .bg-green-100, .bg-teal-50, .bg-teal-100),
+:root:not([data-theme="light"]) .app-content [class*="bg-emerald-50/"] {
+  background-color: rgba(0, 232, 122, 0.10) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.bg-amber-50, .bg-amber-100, .bg-yellow-50, .bg-yellow-100, .bg-orange-50, .bg-orange-100),
+:root:not([data-theme="light"]) .app-content [class*="bg-amber-50/"] {
+  background-color: rgba(255, 176, 32, 0.11) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.bg-red-50, .bg-red-100, .bg-rose-50, .bg-rose-100),
+:root:not([data-theme="light"]) .app-content [class*="bg-red-50/"],
+:root:not([data-theme="light"]) .app-content [class*="bg-rose-50/"] {
+  background-color: rgba(255, 59, 59, 0.11) !important;
+}
+
+/* Text levels are explicit so dark labels never remain slate-on-charcoal. */
+:root:not([data-theme="light"]) .app-content :is(.text-slate-950, .text-slate-900, .text-slate-800, .text-slate-700, .text-gray-900, .text-gray-800, .text-gray-700) {
+  color: var(--text-primary) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.text-slate-600, .text-slate-500, .text-gray-600, .text-gray-500) {
+  color: var(--text-secondary) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.text-slate-400, .text-gray-400) {
+  color: #9B9EA3 !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.text-slate-300, .text-slate-200, .text-slate-100, .text-slate-50, .text-gray-300, .text-gray-200, .text-gray-100) {
+  color: #D7D9DC !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.text-blue-500, .text-blue-600, .text-blue-700, .text-blue-800, .text-blue-900, .text-sky-600, .text-sky-800, .text-cyan-300, .text-cyan-400) {
+  color: #8EC5FF !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.text-indigo-500, .text-indigo-600, .text-indigo-700, .text-indigo-800, .text-indigo-900, .text-violet-500, .text-violet-600, .text-violet-700, .text-violet-800, .text-violet-900, .text-purple-500, .text-purple-600, .text-purple-700, .text-fuchsia-500, .text-fuchsia-600, .text-fuchsia-700) {
+  color: #BFAAFF !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.text-emerald-500, .text-emerald-600, .text-emerald-700, .text-emerald-800, .text-emerald-900, .text-green-500, .text-green-600, .text-green-700, .text-green-800, .text-teal-700) {
+  color: #69E6AE !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.text-amber-500, .text-amber-600, .text-amber-700, .text-amber-800, .text-amber-900, .text-yellow-600, .text-yellow-700, .text-orange-500, .text-orange-600, .text-orange-700) {
+  color: #FFD174 !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.text-red-400, .text-red-500, .text-red-600, .text-red-700, .text-red-800, .text-red-900, .text-rose-500, .text-rose-600, .text-rose-700, .text-rose-800) {
+  color: #FF8585 !important;
+}
+
+/* Borders remain visible at one consistent strength across cards, tables and notices. */
+:root:not([data-theme="light"]) .app-content :is(.border-slate-50, .border-slate-100, .border-slate-200, .border-slate-300, .border-gray-100, .border-gray-200, .border-gray-300),
+:root:not([data-theme="light"]) .app-content [class*="border-slate-200/"] {
+  border-color: var(--border-card) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.border-blue-100, .border-blue-200, .border-blue-300, .border-cyan-400, .border-cyan-500) {
+  border-color: rgba(83, 147, 255, 0.30) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.border-indigo-100, .border-indigo-200, .border-indigo-300, .border-violet-100, .border-violet-200, .border-violet-300, .border-purple-100, .border-purple-200, .border-fuchsia-100) {
+  border-color: rgba(182, 154, 255, 0.28) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.border-emerald-100, .border-emerald-200, .border-emerald-300, .border-green-100, .border-green-200, .border-teal-200) {
+  border-color: rgba(0, 232, 122, 0.26) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.border-amber-100, .border-amber-200, .border-amber-300, .border-orange-100, .border-orange-200, .border-orange-300) {
+  border-color: rgba(255, 176, 32, 0.27) !important;
+}
+
+:root:not([data-theme="light"]) .app-content :is(.border-red-100, .border-red-200, .border-red-300, .border-rose-100, .border-rose-200, .border-rose-300) {
+  border-color: rgba(255, 59, 59, 0.27) !important;
+}
+
+:root:not([data-theme="light"]) .app-content table {
+  color: var(--text-primary);
+}
+
+:root:not([data-theme="light"]) .app-content table thead {
+  color: var(--text-secondary);
+  background-color: #16181B !important;
+}
+
+:root:not([data-theme="light"]) .app-content table tbody tr {
+  border-color: var(--border-card);
 }
 
 @keyframes pageReveal {
