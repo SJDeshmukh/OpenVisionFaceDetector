@@ -41,6 +41,10 @@ from services.person_image_cache_service import (
     PRIVATE_IMAGE_REDIRECT_CACHE_CONTROL,
     load_person_image_versions,
 )
+from services.login_identity_service import (
+    LoginIdentityConflictError,
+    sync_person_login_identity,
+)
 
 def _get_faculty_identifiers(c, username):
     """Fetch all possible strings that identify this faculty member (username, name, email)."""
@@ -1318,8 +1322,13 @@ def upload_face():
                         pass
 
             try:
-                if phone is not None and phone != "" and str(phone) != str(existing.get("phone") or ""):
-                    updated_cd = custom_data if custom_data is not None else existing.get("custom_data")
+                phone_changed = (
+                    phone is not None
+                    and phone != ""
+                    and str(phone) != str(existing.get("phone") or "")
+                )
+                updated_cd = custom_data if custom_data is not None else existing.get("custom_data")
+                if phone_changed:
                     student_number_for_parent = None
                     try:
                         cd_obj = json.loads(updated_cd) if updated_cd else {}
@@ -1333,79 +1342,29 @@ def upload_face():
                             (phone, existing.get("vendor_id"), student_number_for_parent),
                         )
                     
-                    # --- Automated Student Login Sync on Update ---
-                    c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (existing.get("vendor_id"),))
-                    s_row = c.fetchone()
-                    features = json.loads(s_row[0]) if s_row and s_row[0] else []
-                    
-                    if 'leave_management' in features:
-                        # If phone or ID changed, we might need to update the login
-                        new_phone = str(phone or "").strip()
-                        login_email = login_email_from_profile(updated_cd)
-                        
-                        if login_email and new_phone:
-                            # Check if a login exists for this person_id
-                            c.execute("SELECT username, password_plain FROM system_users WHERE person_id = ?", (person_id,))
-                            login_row = c.fetchone()
-                            
-                            if login_row:
-                                old_username = login_row[0]
-                                old_plain = login_row[1]
-                                
-                                # Employee/student IDs are not login identities.
-                                if str(old_username).lower() != login_email:
-                                    # Check whether the target email is already claimed by ANY
-                                    # other account. This prevents the duplicate-key PostgreSQL
-                                    # error when the email was previously registered to a
-                                    # different person_id (or a person_id=NULL admin row).
-                                    c.execute(
-                                        "SELECT username FROM system_users WHERE LOWER(username) = LOWER(?) AND (person_id IS NULL OR person_id <> ?)",
-                                        (login_email, person_id),
-                                    )
-                                    conflict_row = c.fetchone()
-                                    if conflict_row:
-                                        # Email already belongs to another account.
-                                        # Log instead of overwriting (data-integrity preserved).
-                                        logger.warning(
-                                            "Student login sync skipped for person_id=%s: email %s is"
-                                            " already claimed by another system_users account."
-                                            " Resolve the duplicate in the System Access panel.",
-                                            person_id, login_email,
-                                        )
-                                    else:
-                                        _sync_is_pg = getattr(conn, "_is_pg", False)
-                                        if _sync_is_pg:
-                                            try: c.execute("SAVEPOINT login_user_sync")
-                                            except Exception: pass
-                                        try:
-                                            c.execute("UPDATE system_users SET username = ? WHERE person_id = ?", (login_email, person_id))
-                                            c.execute("DELETE FROM active_sessions WHERE username = ?", (old_username,))
-                                            if _sync_is_pg:
-                                                try: c.execute("RELEASE SAVEPOINT login_user_sync")
-                                                except Exception: pass
-                                        except Exception as _upd_err:
-                                            # Unique constraint race (PG). Roll back the sub-op only via SAVEPOINT.
-                                            if _sync_is_pg:
-                                                try: c.execute("ROLLBACK TO SAVEPOINT login_user_sync")
-                                                except Exception: pass
-                                            logger.warning(
-                                                "Could not rename system_users for person_id=%s to %s: %s",
-                                                person_id, login_email, _upd_err,
-                                            )
-                                
-                                # If the password was still the old phone number, update it to the new one
-                                if old_plain == str(existing.get("phone") or "").strip():
-                                    from services.auth_service import hash_password
-                                    c.execute("UPDATE system_users SET password = ?, password_plain = NULL WHERE person_id = ?",
-                                              (hash_password(new_phone), person_id))
-                            else:
-                                # Proactively create it if it didn't exist
-                                from services.auth_service import hash_password
-                                login_role = 'student' if is_student_vertical(vertical) else 'user'
-                                c.execute("INSERT OR IGNORE INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, ?, ?, ?)",
-                                          (login_email, hash_password(new_phone), login_role, existing.get("vendor_id"), person_id))
+                # Login identity synchronization must run for email-only edits,
+                # not just when the phone number changes.
+                c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (existing.get("vendor_id"),))
+                s_row = c.fetchone()
+                features = json.loads(s_row[0]) if s_row and s_row[0] else []
+                if 'leave_management' in features:
+                    effective_phone = str(phone or existing.get("phone") or "").strip()
+                    sync_person_login_identity(
+                        conn,
+                        person_id=person_id,
+                        vendor_id=existing.get("vendor_id"),
+                        profile=updated_cd,
+                        phone=effective_phone,
+                        old_phone=existing.get("phone"),
+                        phone_changed=phone_changed,
+                        student_account=is_student_vertical(vertical),
+                        password_hasher=hash_password,
+                    )
+            except LoginIdentityConflictError:
+                raise
             except Exception:
-                pass
+                logger.exception("Unable to synchronize login identity for person_id=%s", person_id)
+                raise
         else:
             # Insert New
             to_store_templates = None
@@ -1648,6 +1607,12 @@ def upload_face():
             "vendor_id": vendor_id,
             "person": committed_person,
         })
+    except LoginIdentityConflictError as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 409
     except Exception as e:
         if getattr(conn, "_is_pg", False):
             try: conn.rollback()

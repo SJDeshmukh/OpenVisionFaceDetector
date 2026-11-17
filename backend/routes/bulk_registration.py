@@ -322,24 +322,32 @@ def bulk_registration_upload():
         features = json.loads(s_row[0] or '[]') if s_row else []
         inking_enabled = 'leave_management' in features or 'mobile_app' in features
 
-        valid_hostel_branches = set()
+        hostel_branches = {}
+
+        def remember_hostel_branch(value):
+            cleaned = str(value or '').strip()
+            if cleaned:
+                # Deduplicate without changing the spelling supplied by the
+                # configuration or spreadsheet (for example, keep "CSE").
+                hostel_branches.setdefault(cleaned.casefold(), cleaned)
+
         if vendor_vertical == 'hostel':
             c.execute("SELECT DISTINCT branch FROM classes WHERE vendor_id = ? AND branch IS NOT NULL AND branch <> ''", (vendor_id,))
             for br in c.fetchall() or []:
-                if br[0]: valid_hostel_branches.add(str(br[0]).strip().lower())
+                remember_hostel_branch(br[0])
             c.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
             v_dept_row = c.fetchone()
             if v_dept_row and v_dept_row[0]:
                 try:
                     d_list = json.loads(v_dept_row[0]) if isinstance(v_dept_row[0], str) else v_dept_row[0]
                     for d in d_list:
-                        if d: valid_hostel_branches.add(str(d).strip().lower())
+                        remember_hostel_branch(d)
                 except Exception:
                     pass
             for opts in (requested_field_options or {}).values():
                 if isinstance(opts, list):
                     for o in opts:
-                        if o: valid_hostel_branches.add(str(o).strip().lower())
+                        remember_hostel_branch(o)
 
         success_count = 0
         created_count = 0
@@ -397,7 +405,7 @@ def bulk_registration_upload():
                         errors.append(f"Row {row_idx + 2}: Branch is mandatory for hostel resident registration")
                         skipped_count += 1
                         continue
-                    valid_hostel_branches.add(str(row_branch).strip().lower())
+                    remember_hostel_branch(row_branch)
                 row_academic_payload = dict(req_academic_payload) if req_academic_payload else None
                 if not row_class_id and excel_class_id_key:
                     row_class_id = str(row.get(excel_class_id_key) or '').strip()
@@ -646,6 +654,12 @@ def bulk_registration_upload():
                 custom_data_str = json.dumps(custom_dict, separators=(',', ':'))
 
                 department = str(row.get(department_key) or '').strip() if department_key else ''
+                # Hostel branch is the resident's authoritative organizational
+                # scope. Keep the core column aligned with custom_data.branch so
+                # leave routing, filters, and manual edits all use the Excel
+                # Branch value rather than creating a second parallel field.
+                if vendor_vertical == 'hostel' and row_branch:
+                    department = str(row_branch).strip()
                 designation = str(row.get(designation_key) or '').strip() if designation_key else ''
                 shift = str(row.get(shift_key) or '').strip() if shift_key else ''
                 if existing_person_id:
@@ -908,14 +922,21 @@ def bulk_registration_upload():
         
         c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(new_reg_config, separators=(',', ':')), vendor_id))
 
-        if valid_hostel_branches:
+        if hostel_branches:
             try:
                 c.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
                 cur_v_row = c.fetchone()
                 cur_depts = []
                 if cur_v_row and cur_v_row[0]:
                     cur_depts = json.loads(cur_v_row[0]) if isinstance(cur_v_row[0], str) else cur_v_row[0]
-                merged_depts = list(dict.fromkeys(cur_depts + [b.title() if b.islower() else b for b in valid_hostel_branches]))
+                merged_depts = []
+                seen_departments = set()
+                for branch in list(cur_depts) + list(hostel_branches.values()):
+                    cleaned = str(branch or '').strip()
+                    identity = cleaned.casefold()
+                    if cleaned and identity not in seen_departments:
+                        seen_departments.add(identity)
+                        merged_depts.append(cleaned)
                 c.execute("UPDATE vendors SET departments = ? WHERE id = ?", (json.dumps(merged_depts), vendor_id))
             except Exception as dept_sync_err:
                 logger.warning("Failed to sync departments: %s", dept_sync_err)

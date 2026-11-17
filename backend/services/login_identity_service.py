@@ -7,6 +7,10 @@ import re
 LOGIN_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+class LoginIdentityConflictError(ValueError):
+    """Raised when a profile email is already owned by another login."""
+
+
 def normalize_login_email(value):
     return str(value or "").strip().lower()
 
@@ -60,6 +64,109 @@ def is_designated_kiosk_account(user, kiosk_username=None):
     return bool(user.get("is_kiosk"))
 
 
+def _table_exists(conn, table_name):
+    cursor = conn.cursor()
+    if getattr(conn, "_is_pg", False):
+        cursor.execute("SELECT to_regclass(?)", (table_name,))
+        row = cursor.fetchone()
+        return bool(row and row[0])
+    cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    )
+    return cursor.fetchone() is not None
+
+
+def sync_person_login_identity(
+    conn,
+    *,
+    person_id,
+    vendor_id,
+    profile,
+    phone,
+    old_phone="",
+    phone_changed=False,
+    student_account=False,
+    password_hasher,
+):
+    """Keep a person's login aligned with their current profile email.
+
+    Email-only profile edits must rename the linked login as well. Existing
+    Google links are deliberately removed when the email changes so the old
+    Google account cannot continue authenticating as the renamed person.
+    """
+    login_email = login_email_from_profile(profile)
+    normalized_phone = str(phone or "").strip()
+    if not login_email:
+        return "skipped"
+
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT username, password_plain, has_set_password FROM system_users "
+        "WHERE person_id = ? AND vendor_id = ? LIMIT 1",
+        (person_id, vendor_id),
+    )
+    login_row = cursor.fetchone()
+    if login_row:
+        old_username = str(login_row[0] or "")
+        old_plain = login_row[1]
+        has_set_password = int(login_row[2] or 0)
+        renamed = normalize_login_email(old_username) != login_email
+
+        if renamed:
+            cursor.execute(
+                "SELECT username FROM system_users WHERE LOWER(username) = LOWER(?) "
+                "AND (person_id IS NULL OR person_id <> ?) LIMIT 1",
+                (login_email, person_id),
+            )
+            if cursor.fetchone():
+                raise LoginIdentityConflictError(
+                    "This email address is already used by another login"
+                )
+
+            if _table_exists(conn, "external_auth_identities"):
+                cursor.execute(
+                    "DELETE FROM external_auth_identities WHERE LOWER(username) = LOWER(?)",
+                    (old_username,),
+                )
+            cursor.execute(
+                "UPDATE system_users SET username = ? WHERE person_id = ? AND vendor_id = ?",
+                (login_email, person_id, vendor_id),
+            )
+            cursor.execute(
+                "DELETE FROM active_sessions WHERE username = ?",
+                (old_username,),
+            )
+
+        if normalized_phone and phone_changed and (
+            has_set_password == 0 or old_plain == str(old_phone or "").strip()
+        ):
+            cursor.execute(
+                "UPDATE system_users SET password = ?, password_plain = NULL "
+                "WHERE person_id = ? AND vendor_id = ?",
+                (password_hasher(normalized_phone), person_id, vendor_id),
+            )
+        return "renamed" if renamed else "unchanged"
+
+    if not normalized_phone:
+        return "skipped"
+
+    role = "student" if student_account else "user"
+    cursor.execute(
+        "INSERT INTO system_users "
+        "(username, password, password_plain, role, vendor_id, person_id) "
+        "VALUES (?, ?, NULL, ?, ?, ?)",
+        (
+            login_email,
+            password_hasher(normalized_phone),
+            role,
+            vendor_id,
+            person_id,
+        ),
+    )
+    return "created"
+
+
 def migrate_legacy_login_identities(conn):
     """Replace legacy ID-based usernames with their registered profile email.
 
@@ -91,10 +198,11 @@ def migrate_legacy_login_identities(conn):
         if role == "super_admin":
             continue
 
-        target_email = (
-            normalize_login_email(username)
-            if is_valid_login_email(username)
-            else login_email_from_profile(custom_data)
+        # A linked person's current profile email is authoritative. This also
+        # repairs older email-only edits that changed faces.custom_data but left
+        # system_users.username on the previous address.
+        target_email = login_email_from_profile(custom_data) or (
+            normalize_login_email(username) if is_valid_login_email(username) else ""
         )
         if not target_email or target_email == username:
             continue
@@ -106,6 +214,11 @@ def migrate_legacy_login_identities(conn):
         if cursor.fetchone():
             continue
 
+        if _table_exists(conn, "external_auth_identities"):
+            cursor.execute(
+                "DELETE FROM external_auth_identities WHERE LOWER(username) = LOWER(?)",
+                (username,),
+            )
         cursor.execute(
             "UPDATE system_users SET username = ? WHERE username = ?",
             (target_email, username),

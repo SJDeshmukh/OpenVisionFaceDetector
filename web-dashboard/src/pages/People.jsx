@@ -81,6 +81,7 @@ const normalizedFieldIdentity = (field) => normalizedFieldKey(field)
 const isNameField = (field) => field?.is_name || ['name', 'full_name', 'student_name', 'employee_name'].includes(normalizedFieldIdentity(field));
 const isPhoneField = (field) => field?.is_phone || ['phone', 'mobile', 'mobile_number', 'phone_number', 'contact_number'].includes(normalizedFieldIdentity(field));
 const isClassField = (field) => ['class', 'class_id', 'class_section'].includes(normalizedFieldIdentity(field));
+const isBranchField = (field) => ['branch', 'stream', 'course'].includes(normalizedFieldIdentity(field));
 const peopleCachePayload = (people) => people.map((person) => {
   const cached = { ...person };
   delete cached.templates;
@@ -765,7 +766,13 @@ const People = () => {
       templates: user.templates || '',
       class_id: classId,
       display_id: user.display_id || '',
-      ...dynamicFields
+      ...dynamicFields,
+      // Hostel imports keep the canonical branch in custom_data.branch and in
+      // the core department column. Read both so older imported residents also
+      // populate the single Branch selector when edited.
+      ...(isHostel ? {
+        branch: dynamicFields.branch || dynamicFields.Branch || dynamicFields.stream || user.department || ''
+      } : {})
     });
     setIsModalOpen(true);
   };
@@ -1305,6 +1312,32 @@ const People = () => {
   const nameHeader = nameHeaderObj?.label || personLabel;
   const phoneField = registrationColumns.find(isPhoneField);
   const classField = registrationColumns.find(isClassField);
+  const branchField = registrationColumns.find(isBranchField);
+
+  const hostelBranchOptions = useMemo(() => {
+    const values = new Set();
+    const addValue = (value) => {
+      const normalized = typeof value === 'string' ? value.trim() : '';
+      if (normalized) values.add(normalized);
+    };
+
+    (branchField?.options || []).forEach(addValue);
+    (vendorClasses || []).forEach((item) => addValue(item?.branch));
+    (vendorDepartments || []).forEach((item) => addValue(typeof item === 'string' ? item : item?.name));
+
+    let accountDepartments = user?.departments || [];
+    if (typeof accountDepartments === 'string') {
+      try {
+        accountDepartments = JSON.parse(accountDepartments || '[]');
+      } catch {
+        accountDepartments = [];
+      }
+    }
+    (Array.isArray(accountDepartments) ? accountDepartments : []).forEach(addValue);
+    addValue(formData.branch);
+
+    return Array.from(values).sort((left, right) => left.localeCompare(right));
+  }, [branchField, vendorClasses, vendorDepartments, user?.departments, formData.branch]);
 
   const tableColumns = useMemo(() => {
     return (registrationColumns || []).filter((col) => {
@@ -2420,7 +2453,7 @@ const People = () => {
                 {registrationColumns.map((col, idx) => {
                   const fieldKey = col.key || col.field;
                   // Skip core fields to prevent duplication, and skip room/class fields for hostel since allocation is handled separately
-                  if (isNameField(col) || isPhoneField(col) || isClassField(col)) return null;
+                  if (isNameField(col) || isPhoneField(col) || isClassField(col) || (isHostel && isBranchField(col))) return null;
 
                   const inputType = col.type || 'text';
                   const options = Array.isArray(col.options) ? col.options : [];
@@ -2463,11 +2496,11 @@ const People = () => {
                   );
                 })}
                 
-                {/* Branch Selection for Hostel Residents (Optional) */}
+                {/* Canonical Branch Selection for Hostel Residents */}
                 {isHostel && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-700">
-                      Branch <span className="text-slate-400 font-normal">(Optional)</span>
+                      {branchField?.label || 'Branch'} <span className="text-red-500 ml-1">*</span>
                     </label>
                     <div className="relative">
                       <select
@@ -2482,12 +2515,10 @@ const People = () => {
                           }));
                         }}
                         className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                        required
                       >
                         <option value="">-- Select Branch --</option>
-                        {Array.from(new Set([
-                          ...(vendorClasses || []).map(c => c.branch).filter(Boolean),
-                          ...(Array.isArray(user?.departments) ? user.departments : (typeof user?.departments === 'string' ? JSON.parse(user.departments || '[]') : []))
-                        ])).map(br => (
+                        {hostelBranchOptions.map(br => (
                           <option key={br} value={br}>{br}</option>
                         ))}
                       </select>

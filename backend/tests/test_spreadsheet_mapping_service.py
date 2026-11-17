@@ -71,6 +71,20 @@ def test_student_mapping_supports_mixed_programs_and_academic_sessions(monkeypat
     }
 
 
+def test_student_mapping_keeps_excel_branch_as_canonical_branch(monkeypatch):
+    monkeypatch.setenv("SPREADSHEET_LLM_MAPPING_ENABLED", "false")
+    result = mapping_service.map_spreadsheet_headers(
+        ["Admission Number", "Student Name", "Branch"],
+        [],
+        context="student",
+    )
+    assert result["mapping"] == {
+        "name": "Student Name",
+        "person_id": "Admission Number",
+        "branch": "Branch",
+    }
+
+
 def test_llm_maps_custom_headers_in_one_call_without_receiving_row_values(monkeypatch):
     monkeypatch.setenv("SPREADSHEET_LLM_MAPPING_ENABLED", "true")
     provider = FakeProvider('```json\n{"mapping":{"name":"Associate","phone":"Reach No","person_id":"Badge Ref","email":"invented"}}\n```')

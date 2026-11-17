@@ -28,7 +28,8 @@ def _create_schema(path):
         CREATE TABLE vendors (
             id INTEGER PRIMARY KEY,
             vertical TEXT,
-            registration_config TEXT
+            registration_config TEXT,
+            departments TEXT DEFAULT '[]'
         );
         CREATE TABLE subscriptions (vendor_id INTEGER PRIMARY KEY, features TEXT);
         CREATE TABLE faces (
@@ -137,6 +138,31 @@ def _academic_workbook(rows):
     return output
 
 
+def _hostel_mapping(*_args, **_kwargs):
+    return {
+        "mapping": {
+            "name": "Student Name",
+            "person_id": "Resident ID",
+            "branch": "Branch",
+        },
+        "method": "deterministic",
+        "warning": None,
+    }
+
+
+def _hostel_workbook(rows):
+    output = io.BytesIO()
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Residents"
+    sheet.append(["Resident ID", "Student Name", "Branch"])
+    for row in rows:
+        sheet.append(row)
+    workbook.save(output)
+    output.seek(0)
+    return output
+
+
 def test_rejected_row_does_not_abort_remaining_employee_import(tmp_path, monkeypatch):
     db_path = tmp_path / "bulk-import.db"
     _create_schema(db_path)
@@ -212,6 +238,56 @@ def test_all_rejected_rows_return_the_first_real_error(tmp_path, monkeypatch):
     assert status == 400
     assert payload["error"].startswith("No employees were imported. Row 2:")
     assert "current transaction is aborted" not in payload["error"].lower()
+
+
+def test_hostel_excel_branch_populates_canonical_resident_branch(tmp_path, monkeypatch):
+    db_path = tmp_path / "hostel-import.db"
+    _create_schema(db_path)
+    conn = _connection(db_path)
+    conn.execute(
+        "INSERT INTO vendors (id, vertical, registration_config, departments) "
+        "VALUES (3, 'hostel', '[]', '[]')"
+    )
+    conn.execute("INSERT INTO subscriptions (vendor_id, features) VALUES (3, '[]')")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(bulk_registration, "get_db_connection", lambda: _connection(db_path))
+    monkeypatch.setattr(bulk_registration, "map_spreadsheet_headers", _hostel_mapping)
+    monkeypatch.setattr(bulk_registration, "log_audit", lambda *_args, **_kwargs: None)
+
+    workbook = _hostel_workbook([["RES-001", "Hostel Resident", "CSE"]])
+    app = Flask(__name__)
+    with app.test_request_context(
+        "/bulk-registration/upload",
+        method="POST",
+        data={"file": (workbook, "residents.xlsx")},
+        content_type="multipart/form-data",
+    ):
+        g.vendor_id = 3
+        g.username = "owner@example.com"
+        response = bulk_registration.bulk_registration_upload.__wrapped__()
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["created"] == 1
+
+    conn = _connection(db_path)
+    resident = conn.execute(
+        "SELECT department, custom_data FROM faces WHERE vendor_id = 3"
+    ).fetchone()
+    config = json.loads(
+        conn.execute("SELECT registration_config FROM vendors WHERE id = 3").fetchone()[0]
+    )
+    departments = json.loads(
+        conn.execute("SELECT departments FROM vendors WHERE id = 3").fetchone()[0]
+    )
+    conn.close()
+
+    assert resident["department"] == "CSE"
+    assert json.loads(resident["custom_data"])["branch"] == "CSE"
+    assert [field["field"] for field in config].count("branch") == 1
+    assert "CSE" in departments
 
 
 def test_mixed_academic_upload_supports_program_durations_and_is_idempotent(tmp_path, monkeypatch):
