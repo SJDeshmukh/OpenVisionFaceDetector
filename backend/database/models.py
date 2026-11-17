@@ -276,6 +276,22 @@ class SystemUser(Base):
     vendor = relationship("Vendor", back_populates="system_users")
     person = relationship("Face", back_populates="system_user")
 
+
+class ExternalAuthIdentity(Base):
+    __tablename__ = 'external_auth_identities'
+    __table_args__ = (
+        UniqueConstraint('provider', 'provider_subject'),
+        UniqueConstraint('provider', 'username'),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(50), nullable=False)
+    provider_subject = Column(String(255), nullable=False)
+    username = Column(String(255), ForeignKey('system_users.username', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    vendor_id = Column(Integer, ForeignKey('vendors.id', ondelete='CASCADE'))
+    email = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login_at = Column(DateTime, default=datetime.utcnow)
+
 class Subscription(Base):
     __tablename__ = 'subscriptions'
     id = Column(Integer, primary_key=True, autoincrement=True)

@@ -28,19 +28,28 @@ const errorVariants = {
   exit:    { opacity: 0, scale: 0.97 },
 };
 
+const GoogleMark = () => (
+  <svg aria-hidden="true" viewBox="0 0 18 18" className="w-[18px] h-[18px] flex-shrink-0">
+    <path fill="#4285F4" d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.482h4.844a4.14 4.14 0 0 1-1.797 2.715v2.259h2.909c1.702-1.567 2.684-3.875 2.684-6.615Z" />
+    <path fill="#34A853" d="M9 18c2.43 0 4.468-.806 5.956-2.18l-2.909-2.259c-.806.54-1.835.859-3.047.859-2.344 0-4.328-1.585-5.037-3.714H.956v2.333A9 9 0 0 0 9 18Z" />
+    <path fill="#FBBC05" d="M3.963 10.706A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.168.281-1.706V4.961H.956A9 9 0 0 0 0 9c0 1.45.347 2.823.956 4.039l3.007-2.333Z" />
+    <path fill="#EA4335" d="M9 3.58c1.321 0 2.507.454 3.441 1.346l2.581-2.581C13.464.892 11.426 0 9 0A9 9 0 0 0 .956 4.961l3.007 2.333C4.672 5.165 6.656 3.58 9 3.58Z" />
+  </svg>
+);
+
 /* ── Field ── */
 const Field = ({ label, icon: Icon, type, value, onChange, placeholder, extra, custom }) => {
   const [focused, setFocused] = useState(false);
   return (
-    <motion.div custom={custom} variants={itemVariants} initial="hidden" animate="visible" className="space-y-1.5">
-      <label className="block text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: '#5050A0' }}>
+    <motion.div custom={custom} variants={itemVariants} initial={false} animate="visible" className="space-y-1.5">
+      <label className="block text-[11px] font-semibold uppercase tracking-[0.12em]" style={{ color: '#9B9EA3' }}>
         {label}
       </label>
       <div className="relative">
         <Icon
           size={16}
           className="absolute left-3.5 top-1/2 -translate-y-1/2 transition-colors duration-200"
-          style={{ color: focused ? '#9B6AFF' : '#505080' }}
+          style={{ color: focused ? '#B69AFF' : '#73777D' }}
         />
         <input
           type={type}
@@ -52,9 +61,9 @@ const Field = ({ label, icon: Icon, type, value, onChange, placeholder, extra, c
           required
           className="w-full pl-10 pr-10 py-3 rounded-xl text-sm font-medium transition-all duration-200"
           style={{
-            background: 'rgba(255,255,255,0.04)',
-            border: `1px solid ${focused ? 'rgba(124,58,255,0.5)' : 'rgba(124,58,255,0.18)'}`,
-            boxShadow: focused ? '0 0 0 3px rgba(124,58,255,0.1), 0 0 20px rgba(124,58,255,0.06)' : 'none',
+            background: '#16181B',
+            border: `1px solid ${focused ? 'rgba(182,154,255,0.72)' : 'rgba(255,255,255,0.11)'}`,
+            boxShadow: focused ? '0 0 0 3px rgba(124,58,255,0.2)' : 'none',
             color: '#fff',
             outline: 'none',
           }}
@@ -74,6 +83,7 @@ const Login = () => {
   const [pinFocused, setPinFocused] = useState(false);
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [showPasswordChange, setShowPasswordChange] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -84,7 +94,7 @@ const Login = () => {
   const [resetEmail, setResetEmail] = useState('');
   const [resetStatus, setResetStatus] = useState({ type: '', message: '' });
   const [resetting, setResetting] = useState(false);
-  const { user, staffSession, login, logout, loginAsStaff } = useAuth();
+  const { user, staffSession, login, googleLogin, logout, loginAsStaff } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirectTarget = searchParams.get('redirect');
@@ -110,6 +120,8 @@ const Login = () => {
       navigate(redirectTarget, { replace: true });
     } else if (user.role === 'super_admin') {
       navigate('/admin/vendors', { replace: true });
+    } else if (user.role === 'staff') {
+      navigate('/leave-management', { replace: true });
     } else if (user.role === 'user' || user.role === 'student') {
       const isStudent = usesStudentRecords(user?.vertical);
       navigate(isStudent ? '/leave-management' : '/attendance', { replace: true });
@@ -150,6 +162,22 @@ const Login = () => {
     } else {
       setError(result.error);
     }
+  };
+
+  const handleGoogleLogin = async () => {
+    setError('');
+    setGoogleLoading(true);
+    const result = await googleLogin();
+    setGoogleLoading(false);
+    if (!result.success) {
+      setError(result.error);
+      return;
+    }
+    if (redirectTarget) {
+      navigate(redirectTarget);
+      return;
+    }
+    navigate(result.redirect_url || (result.role === 'staff' || result.staff ? '/leave-management' : '/dashboard'));
   };
 
   const handlePinSubmit = async (e) => {
@@ -214,37 +242,37 @@ const Login = () => {
   return (
     <div
       className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden"
-      style={{ background: '#07071A' }}
+      style={{ background: '#08090A' }}
     >
-      {/* ── Background orbs ── */}
+      {/* Quiet atmospheric depth; the form remains the visual focus. */}
       <div
         className="absolute pointer-events-none rounded-full"
         style={{
           width: 560, height: 560,
-          background: 'radial-gradient(circle, rgba(124,58,255,0.22) 0%, transparent 70%)',
+          background: 'radial-gradient(circle, rgba(124,58,255,0.16) 0%, transparent 70%)',
           top: '-16%', left: '-12%',
-          animation: 'floatOrb 12s ease-in-out infinite',
-          filter: 'blur(1px)',
+          animation: 'floatOrb 14s ease-in-out infinite',
+          filter: 'blur(12px)',
         }}
       />
       <div
         className="absolute pointer-events-none rounded-full"
         style={{
           width: 420, height: 420,
-          background: 'radial-gradient(circle, rgba(6,214,255,0.18) 0%, transparent 70%)',
+          background: 'radial-gradient(circle, rgba(255,255,255,0.055) 0%, transparent 70%)',
           bottom: '-12%', right: '-8%',
           animation: 'floatOrb 10s ease-in-out infinite 3s',
-          filter: 'blur(1px)',
+          filter: 'blur(16px)',
         }}
       />
       <div
         className="absolute pointer-events-none rounded-full"
         style={{
           width: 280, height: 280,
-          background: 'radial-gradient(circle, rgba(255,45,135,0.14) 0%, transparent 70%)',
+          background: 'radial-gradient(circle, rgba(124,58,255,0.07) 0%, transparent 70%)',
           top: '45%', right: '18%',
           animation: 'floatOrbSlow 16s ease-in-out infinite 6s',
-          filter: 'blur(1px)',
+          filter: 'blur(20px)',
         }}
       />
 
@@ -252,62 +280,58 @@ const Login = () => {
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
-          backgroundImage: `linear-gradient(rgba(124,58,255,0.035) 1px, transparent 1px),
-                            linear-gradient(90deg, rgba(124,58,255,0.035) 1px, transparent 1px)`,
-          backgroundSize: '42px 42px',
+          backgroundImage: `linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px),
+                            linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px)`,
+          backgroundSize: '48px 48px',
         }}
       />
 
       {/* ── Login Card ── */}
       <motion.div
-        variants={cardVariants} initial="hidden" animate="visible"
-        className="relative w-full max-w-[400px] rounded-2xl overflow-hidden"
+        variants={cardVariants} initial={false} animate="visible"
+        className="relative w-full max-w-[410px] rounded-[22px] overflow-hidden"
         style={{
-          background: 'rgba(13, 12, 42, 0.92)',
+          background: 'rgba(17, 19, 21, 0.94)',
           backdropFilter: 'blur(28px)',
           WebkitBackdropFilter: 'blur(28px)',
-          border: '1px solid rgba(124,58,255,0.22)',
-          boxShadow: '0 30px 90px rgba(0,0,0,0.7), 0 0 0 1px rgba(124,58,255,0.07) inset, 0 1px 0 rgba(255,255,255,0.05) inset',
+          border: '1px solid rgba(255,255,255,0.11)',
+          boxShadow: '0 32px 90px rgba(0,0,0,0.58), inset 0 1px 0 rgba(255,255,255,0.04)',
         }}
       >
         {/* Header */}
         <div
           className="relative px-8 pt-8 pb-7 text-center overflow-hidden"
           style={{
-            background: 'linear-gradient(135deg, rgba(124,58,255,0.28) 0%, rgba(6,214,255,0.12) 100%)',
+            background: 'linear-gradient(180deg, rgba(255,255,255,0.035) 0%, rgba(255,255,255,0.008) 100%)',
           }}
         >
           {/* Shimmer line */}
           <div
             className="absolute top-0 left-0 right-0 h-px"
-            style={{ background: 'linear-gradient(90deg, transparent, rgba(124,58,255,0.6), rgba(6,214,255,0.6), transparent)' }}
+            style={{ background: 'linear-gradient(90deg, transparent, rgba(182,154,255,0.75), transparent)' }}
           />
 
-          {/* Logo with pulse rings */}
+          {/* Brand mark */}
           <div className="relative w-[72px] h-[72px] mx-auto mb-4">
             <div
               className="absolute inset-[-10px] rounded-full"
-              style={{ border: '1.5px solid rgba(124,58,255,0.35)', animation: 'pulseRing 2.8s ease-in-out infinite' }}
-            />
-            <div
-              className="absolute inset-[-4px] rounded-full"
-              style={{ border: '1px solid rgba(6,214,255,0.25)', animation: 'pulseRing 2.8s ease-in-out infinite 0.55s' }}
+              style={{ border: '1px solid rgba(182,154,255,0.18)' }}
             />
             <div
               className="w-full h-full rounded-2xl flex items-center justify-center"
               style={{
-                background: 'linear-gradient(145deg, #090C28 0%, #111748 100%)',
-                border: '1px solid rgba(182,108,255,0.5)',
-                boxShadow: '0 0 28px rgba(124,58,255,0.7), 0 0 56px rgba(124,58,255,0.25)',
+                background: '#0C0D0F',
+                border: '1px solid rgba(255,255,255,0.12)',
+                boxShadow: '0 14px 34px rgba(0,0,0,0.34)',
               }}
             >
               <BrandLogo className="h-[58px] w-[58px]" />
             </div>
           </div>
 
-          <h1 className="text-xl font-bold text-white tracking-tight">TapInX Sign In</h1>
-          <p className="text-xs mt-1 flex items-center justify-center gap-1.5" style={{ color: 'rgba(196,196,224,0.6)' }}>
-            <Zap size={11} style={{ color: '#7C3AFF' }} />
+          <h1 className="text-[22px] font-bold text-white tracking-[-0.035em]">TapInX Sign In</h1>
+          <p className="text-xs mt-1.5 flex items-center justify-center gap-1.5" style={{ color: '#888C92' }}>
+            <Zap size={11} style={{ color: '#B69AFF' }} />
             Powered by OpenVisionX
           </p>
         </div>
@@ -351,9 +375,9 @@ const Login = () => {
                       type="button"
                       onClick={() => setShowPassword(p => !p)}
                       className="absolute right-3.5 top-1/2 -translate-y-1/2 transition-colors duration-200"
-                      style={{ color: '#505080' }}
-                      onMouseEnter={e => e.currentTarget.style.color = '#9B6AFF'}
-                      onMouseLeave={e => e.currentTarget.style.color = '#505080'}
+                      style={{ color: '#73777D' }}
+                      onMouseEnter={e => e.currentTarget.style.color = '#B69AFF'}
+                      onMouseLeave={e => e.currentTarget.style.color = '#73777D'}
                     >
                       {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
@@ -369,14 +393,14 @@ const Login = () => {
                       setShowForgotPassword(true);
                     }}
                     className="text-xs font-semibold transition-colors"
-                    style={{ color: '#9B6AFF' }}
+                    style={{ color: '#B69AFF' }}
                   >
                     Forgot password?
                   </button>
                 </div>
 
                 <motion.button
-                  custom={2} variants={itemVariants} initial="hidden" animate="visible"
+                  custom={2} variants={itemVariants} initial={false} animate="visible"
                   type="submit"
                   disabled={loading}
                   className="btn-primary w-full py-3.5 rounded-xl text-sm font-semibold tracking-wide mt-1"
@@ -391,6 +415,37 @@ const Login = () => {
                     </span>
                   ) : 'Sign In'}
                 </motion.button>
+
+                <motion.div
+                  custom={3} variants={itemVariants} initial={false} animate="visible"
+                  className="flex items-center gap-3 py-0.5"
+                >
+                  <span className="h-px flex-1" style={{ background: 'rgba(255,255,255,0.09)' }} />
+                  <span className="text-[10px] uppercase tracking-[0.18em] font-semibold" style={{ color: '#73777D' }}>or</span>
+                  <span className="h-px flex-1" style={{ background: 'rgba(255,255,255,0.09)' }} />
+                </motion.div>
+
+                <motion.button
+                  custom={4} variants={itemVariants} initial={false} animate="visible"
+                  type="button"
+                  onClick={handleGoogleLogin}
+                  disabled={loading || googleLoading}
+                  className="w-full py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-3 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed"
+                  style={{
+                    background: '#fff',
+                    color: '#1F1F1F',
+                    border: '1px solid rgba(255,255,255,0.85)',
+                    boxShadow: '0 8px 22px rgba(0,0,0,0.2)',
+                  }}
+                >
+                  {googleLoading ? (
+                    <span
+                      className="w-[18px] h-[18px] border-2 border-slate-300 border-t-blue-500 rounded-full"
+                      style={{ animation: 'spin360 0.7s linear infinite' }}
+                    />
+                  ) : <GoogleMark />}
+                  {googleLoading ? 'Connecting to Google…' : 'Continue with Google'}
+                </motion.button>
               </motion.form>
             ) : (
               <motion.form
@@ -404,7 +459,7 @@ const Login = () => {
               >
                 <div className="text-center">
                   <p className="text-base font-bold text-white">Staff Verification</p>
-                  <p className="text-xs mt-1" style={{ color: '#5050A0' }}>Enter your 4-digit PIN (Rector/HOD)</p>
+                  <p className="text-xs mt-1" style={{ color: '#888C92' }}>Enter your 4-digit PIN (Rector/HOD)</p>
                 </div>
 
                 <AnimatePresence>
@@ -428,9 +483,9 @@ const Login = () => {
                     autoFocus
                     className="w-36 text-center text-3xl font-bold py-4 rounded-2xl transition-all duration-200"
                     style={{
-                      background: 'rgba(255,255,255,0.04)',
-                      border: `2px solid ${pinFocused ? 'rgba(124,58,255,0.55)' : 'rgba(124,58,255,0.2)'}`,
-                      boxShadow: pinFocused ? '0 0 0 4px rgba(124,58,255,0.1), 0 0 24px rgba(124,58,255,0.08)' : 'none',
+                      background: '#16181B',
+                      border: `2px solid ${pinFocused ? 'rgba(182,154,255,0.72)' : 'rgba(255,255,255,0.11)'}`,
+                      boxShadow: pinFocused ? '0 0 0 4px rgba(124,58,255,0.18)' : 'none',
                       color: '#fff',
                       letterSpacing: '0.8em',
                       outline: 'none',
@@ -451,9 +506,9 @@ const Login = () => {
                     type="button"
                     onClick={() => { logout(); setStep(0); setPin(''); }}
                     className="w-full py-1.5 text-xs font-medium transition-colors"
-                    style={{ color: '#6A6A9F' }}
+                    style={{ color: '#888C92' }}
                     onMouseEnter={e => e.currentTarget.style.color = '#FF7070'}
-                    onMouseLeave={e => e.currentTarget.style.color = '#6A6A9F'}
+                    onMouseLeave={e => e.currentTarget.style.color = '#888C92'}
                   >
                     Sign in with a different account
                   </button>
@@ -466,7 +521,7 @@ const Login = () => {
       </motion.div>
 
       {/* ── Public Footer Links ── */}
-      <div className="absolute bottom-4 left-0 right-0 text-center text-xs z-10" style={{ color: '#6A6A9F' }}>
+      <div className="absolute bottom-4 left-0 right-0 text-center text-xs z-10" style={{ color: '#73777D' }}>
         <Link to="/privacy-policy" className="hover:text-purple-300 transition underline underline-offset-4 mr-3">
           Privacy Policy
         </Link>
@@ -480,23 +535,23 @@ const Login = () => {
           <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            style={{ background: 'rgba(4,4,20,0.88)', backdropFilter: 'blur(8px)' }}
+            style={{ background: 'rgba(5,6,7,0.88)', backdropFilter: 'blur(8px)' }}
           >
             <motion.div
               initial={{ scale: 0.93, y: 16 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.93, y: 16 }}
               transition={{ type: 'spring', stiffness: 280, damping: 28 }}
               className="w-full max-w-sm rounded-2xl overflow-hidden"
               style={{
-                background: 'rgba(13,12,42,0.97)',
-                border: '1px solid rgba(124,58,255,0.25)',
+                background: 'rgba(17,19,21,0.98)',
+                border: '1px solid rgba(255,255,255,0.11)',
                 boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
               }}
             >
-              <div className="px-7 pt-7 pb-5" style={{ background: 'linear-gradient(135deg, rgba(124,58,255,0.28) 0%, rgba(6,214,255,0.1) 100%)' }}>
+              <div className="px-7 pt-7 pb-5" style={{ background: 'rgba(255,255,255,0.025)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
                 <h2 className="text-lg font-bold text-white flex items-center gap-2">
                   <Mail size={18} style={{ color: '#9B6AFF' }} /> Reset Password
                 </h2>
-                <p className="text-xs mt-1.5" style={{ color: 'rgba(196,196,224,0.65)' }}>
+                <p className="text-xs mt-1.5" style={{ color: '#888C92' }}>
                   Enter your registered email to receive a five-character temporary password.
                 </p>
               </div>
@@ -512,11 +567,11 @@ const Login = () => {
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: '#5050A0' }}>
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.12em]" style={{ color: '#9B9EA3' }}>
                     Registered Email
                   </label>
                   <div className="relative">
-                    <Mail size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: '#505080' }} />
+                    <Mail size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: '#73777D' }} />
                     <input
                       type="email"
                       required
@@ -525,7 +580,7 @@ const Login = () => {
                       onChange={e => setResetEmail(e.target.value)}
                       placeholder="name@example.com"
                       className="w-full pl-10 pr-4 py-3 rounded-xl text-sm font-medium input-glow"
-                      style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(124,58,255,0.18)', color: '#fff', outline: 'none' }}
+                      style={{ background: '#16181B', border: '1px solid rgba(255,255,255,0.11)', color: '#fff', outline: 'none' }}
                     />
                   </div>
                 </div>
@@ -540,7 +595,7 @@ const Login = () => {
                   type="button"
                   onClick={() => setShowForgotPassword(false)}
                   className="w-full py-2.5 text-sm font-medium rounded-xl"
-                  style={{ color: '#7070A8' }}
+                  style={{ color: '#888C92' }}
                 >
                   Back to Sign In
                 </button>
@@ -556,23 +611,23 @@ const Login = () => {
           <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            style={{ background: 'rgba(4,4,20,0.88)', backdropFilter: 'blur(8px)' }}
+            style={{ background: 'rgba(5,6,7,0.88)', backdropFilter: 'blur(8px)' }}
           >
             <motion.div
               initial={{ scale: 0.93, y: 16 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.93, y: 16 }}
               transition={{ type: 'spring', stiffness: 280, damping: 28 }}
               className="w-full max-w-sm rounded-2xl overflow-hidden"
               style={{
-                background: 'rgba(13,12,42,0.97)',
-                border: '1px solid rgba(124,58,255,0.25)',
+                background: 'rgba(17,19,21,0.98)',
+                border: '1px solid rgba(255,255,255,0.11)',
                 boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
               }}
             >
-              <div className="px-7 pt-7 pb-5" style={{ background: 'linear-gradient(135deg, rgba(124,58,255,0.28) 0%, rgba(6,214,255,0.1) 100%)' }}>
+              <div className="px-7 pt-7 pb-5" style={{ background: 'rgba(255,255,255,0.025)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
                 <h2 className="text-lg font-bold text-white flex items-center gap-2">
                   <Lock size={18} style={{ color: '#9B6AFF' }} /> Change Password
                 </h2>
-                <p className="text-xs mt-1.5" style={{ color: 'rgba(196,196,224,0.65)' }}>
+                <p className="text-xs mt-1.5" style={{ color: '#888C92' }}>
                   You must change your password on first login.
                 </p>
               </div>
@@ -587,11 +642,11 @@ const Login = () => {
                   { label: 'Confirm Password', value: confirmPassword, onChange: e => setConfirmPassword(e.target.value) },
                 ].map(({ label, value, onChange }) => (
                   <div key={label} className="space-y-1.5">
-                    <label className="text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: '#5050A0' }}>{label}</label>
+                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em]" style={{ color: '#9B9EA3' }}>{label}</label>
                     <input
                       type="password" required value={value} onChange={onChange}
                       className="w-full px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 input-glow"
-                      style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(124,58,255,0.18)', color: '#fff', outline: 'none' }}
+                      style={{ background: '#16181B', border: '1px solid rgba(255,255,255,0.11)', color: '#fff', outline: 'none' }}
                       placeholder="At least 8 characters"
                     />
                   </div>
@@ -615,23 +670,23 @@ const Login = () => {
           <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            style={{ background: 'rgba(4,4,20,0.88)', backdropFilter: 'blur(8px)' }}
+            style={{ background: 'rgba(5,6,7,0.88)', backdropFilter: 'blur(8px)' }}
           >
             <motion.div
               initial={{ scale: 0.93, y: 16 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.93, y: 16 }}
               transition={{ type: 'spring', stiffness: 280, damping: 28 }}
               className="w-full max-w-sm rounded-2xl overflow-hidden"
               style={{
-                background: 'rgba(13,12,42,0.97)',
-                border: '1px solid rgba(124,58,255,0.25)',
+                background: 'rgba(17,19,21,0.98)',
+                border: '1px solid rgba(255,255,255,0.11)',
                 boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
               }}
             >
-              <div className="px-7 pt-7 pb-5" style={{ background: 'linear-gradient(135deg, rgba(124,58,255,0.28) 0%, rgba(6,214,255,0.1) 100%)' }}>
+              <div className="px-7 pt-7 pb-5" style={{ background: 'rgba(255,255,255,0.025)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
                 <h2 className="text-lg font-bold text-white flex items-center gap-2">
                   <Lock size={18} style={{ color: '#9B6AFF' }} /> Identity Verification
                 </h2>
-                <p className="text-xs mt-1.5" style={{ color: 'rgba(196,196,224,0.65)' }}>
+                <p className="text-xs mt-1.5" style={{ color: '#888C92' }}>
                   Enter your custom password to continue.
                 </p>
               </div>
@@ -642,12 +697,12 @@ const Login = () => {
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: '#5050A0' }}>Custom Password</label>
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.12em]" style={{ color: '#9B9EA3' }}>Custom Password</label>
                   <input
                     type="password" required autoFocus
                     value={studentPassword} onChange={e => setStudentPassword(e.target.value)}
                     className="w-full px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 input-glow"
-                    style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(124,58,255,0.18)', color: '#fff', outline: 'none' }}
+                    style={{ background: '#16181B', border: '1px solid rgba(255,255,255,0.11)', color: '#fff', outline: 'none' }}
                     placeholder="Enter your set password"
                   />
                 </div>
@@ -658,9 +713,9 @@ const Login = () => {
                   type="button"
                   onClick={() => setShowStudentPasswordModal(false)}
                   className="w-full py-2.5 text-sm font-medium transition-colors duration-200"
-                  style={{ color: '#5050A0' }}
+                  style={{ color: '#888C92' }}
                   onMouseEnter={e => e.currentTarget.style.color = '#C4C4E0'}
-                  onMouseLeave={e => e.currentTarget.style.color = '#5050A0'}
+                  onMouseLeave={e => e.currentTarget.style.color = '#888C92'}
                 >
                   Cancel
                 </button>

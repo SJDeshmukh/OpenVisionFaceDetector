@@ -42,6 +42,9 @@ const RootRedirect = () => {
   if (redirectTarget) {
     return <Navigate to={redirectTarget} replace />;
   }
+  if (user?.role === 'staff') {
+    return <Navigate to="/leave-management" replace />;
+  }
   if (user?.role === 'user' || user?.role === 'student') {
     const isStudent = usesStudentRecords(user?.vertical);
     return <Navigate to={isStudent ? "/leave-management" : "/attendance"} replace />;
@@ -65,6 +68,7 @@ const ProtectedRoute = ({ allowedRoles }) => {
   if (allowedRoles && !allowedRoles.includes(user.role)) {
     // If role not allowed, redirect to home or authorized page
     if (user.role === 'super_admin') return <Navigate to="/admin/vendors" replace />;
+    if (user.role === 'staff') return <Navigate to="/leave-management" replace />;
     if (user.role === 'user' || user.role === 'student') {
       const isStudent = usesStudentRecords(user?.vertical);
       return <Navigate to={isStudent ? "/leave-management" : "/attendance"} replace />;
@@ -99,8 +103,10 @@ const FaceResetRoute = () => {
 };
 
 const HostelAlertsRoute = () => {
-  const { user } = useAuth();
-  const allowed = ['vendor_admin', 'admin', 'owner'].includes(user?.role) &&
+  const { user, staffSession } = useAuth();
+  const allowedRole = ['vendor_admin', 'admin', 'owner'].includes(user?.role) ||
+    (user?.role === 'staff' && Boolean(staffSession));
+  const allowed = allowedRole && (!staffSession || staffCanAccessNav(staffSession, 'hostel_alerts')) &&
     user?.features?.includes('hostel_attendance_alerts');
   return allowed ? <HostelAlerts /> : <Navigate to="/dashboard" replace />;
 };
@@ -145,7 +151,7 @@ function App() {
               </Route>
 
               {/* Admin/Rector/HOD/Faculty Routes */}
-              <Route element={<ProtectedRoute allowedRoles={['admin', 'vendor_admin', 'owner', 'rector', 'hod', 'user', 'student', 'faculty']} />}>
+              <Route element={<ProtectedRoute allowedRoles={['admin', 'vendor_admin', 'owner', 'rector', 'hod', 'user', 'student', 'faculty', 'staff']} />}>
                 <Route path="/" element={<RootRedirect />} />
                 <Route path="/dashboard" element={<StaffNavigationRoute navKey="dashboard"><Dashboard /></StaffNavigationRoute>} />
                 <Route path="/people" element={<StaffNavigationRoute navKey="people"><People /></StaffNavigationRoute>} />
@@ -167,7 +173,7 @@ function App() {
               </Route>
 
               {/* Shared/User Routes */}
-              <Route element={<ProtectedRoute allowedRoles={['admin', 'user', 'student', 'vendor_admin', 'owner', 'faculty']} />}>
+              <Route element={<ProtectedRoute allowedRoles={['admin', 'user', 'student', 'vendor_admin', 'owner', 'faculty', 'staff']} />}>
                 <Route path="/users" element={<StaffNavigationRoute navKey="people"><People /></StaffNavigationRoute>} />
               </Route>
             </Route>

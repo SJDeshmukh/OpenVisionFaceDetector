@@ -120,14 +120,9 @@ def _authenticated_leave_staff(vendor_id, required_role=None):
             return None
         return {"id": data.get("staff_id"), "name": name, "role": role, "department": department, "navbar_items": navbar_items}
     except Exception:
-        if data and data.get("staff_id"):
-            return {
-                "id": data.get("staff_id"),
-                "name": data.get("sub", "Staff"),
-                "role": data.get("staff_role", required_role),
-                "department": data.get("department"),
-                "navbar_items": ["leave_management"],
-            }
+        # Staff authorization must fail closed if the current database record
+        # cannot be checked. A previously issued token alone must never restore
+        # permissions after a staff account was changed or removed.
         return None
     finally:
         conn.close()
@@ -1559,7 +1554,7 @@ def parent_approve_request():
 def get_leave_tracking():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
-    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin", "staff")
     if role_error: return role_error
     
     role = request.args.get("role", "rector")
@@ -1678,7 +1673,7 @@ def get_leave_tracking():
 def get_admin_pending_requests():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
-    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin", "staff")
     if role_error: return role_error
     
     role = request.args.get("role", "rector")
@@ -1764,7 +1759,7 @@ def get_admin_pending_requests():
 def get_admin_leave_history():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
-    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin", "staff")
     if role_error: return role_error
     
     role = request.args.get("role")
@@ -1841,7 +1836,7 @@ def get_admin_leave_history():
 def admin_approve_request():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
-    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin", "staff")
     if role_error: return role_error
     
     data = request.json
@@ -2068,7 +2063,7 @@ def get_staff_session():
     vendor_id, error = authenticate_vendor_access()
     if error:
         return error
-    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin", "staff")
     if role_error:
         return role_error
     staff = _authenticated_leave_staff(vendor_id)

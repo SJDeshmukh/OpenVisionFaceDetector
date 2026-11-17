@@ -28,31 +28,47 @@ const SuperAdminLogin = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden border-t-4 border-indigo-600">
-        <div className="p-8 text-center bg-indigo-900">
-          <div className="w-20 h-20 bg-white/10 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm p-3">
+    <div
+      className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden"
+      style={{
+        background: 'radial-gradient(circle at 18% 5%, rgba(124,58,255,0.15), transparent 34rem), #08090A',
+      }}
+    >
+      <div
+        className="rounded-[22px] w-full max-w-md overflow-hidden"
+        style={{
+          background: 'rgba(17,19,21,0.96)',
+          border: '1px solid rgba(255,255,255,0.11)',
+          boxShadow: '0 32px 90px rgba(0,0,0,0.58), inset 0 1px 0 rgba(255,255,255,0.04)',
+        }}
+      >
+        <div className="p-8 text-center" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <div
+            className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-5 p-3"
+            style={{ background: '#0C0D0F', border: '1px solid rgba(255,255,255,0.12)' }}
+          >
             <BrandLogo className="h-12 w-12" />
           </div>
-          <h1 className="text-2xl font-bold text-white">Super Admin Portal</h1>
-          <p className="text-indigo-200 mt-2 text-sm">System Management Access Only</p>
+          <h1 className="text-2xl font-bold text-white tracking-[-0.035em]">Super Admin Portal</h1>
+          <p className="mt-2 text-sm" style={{ color: '#888C92' }}>System management access only</p>
         </div>
 
         <div className="p-8">
           <form onSubmit={handleSubmit} className="space-y-6">
             {error && (
-              <div className="bg-red-50 text-red-600 text-sm p-3 rounded-lg border border-red-200">
+              <div className="text-sm p-3 rounded-xl" style={{ background: 'rgba(255,59,59,0.1)', color: '#FF7070', border: '1px solid rgba(255,59,59,0.22)' }}>
                 {error}
               </div>
             )}
             
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">Username</label>
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.12em] mb-2" style={{ color: '#9B9EA3' }}>Username</label>
               <div className="relative">
                 <input
                   type="text"
                   required
-                  className="w-full pl-4 pr-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+                  className="input-glow w-full pl-4 pr-4 py-3 rounded-xl transition-colors"
+                  style={{ background: '#16181B', border: '1px solid rgba(255,255,255,0.11)', color: '#fff', outline: 'none' }}
                   placeholder="superadmin"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
@@ -61,13 +77,14 @@ const SuperAdminLogin = () => {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">Password</label>
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.12em] mb-2" style={{ color: '#9B9EA3' }}>Password</label>
               <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: '#73777D' }} size={18} />
                 <input
                   type="password"
                   required
-                  className="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+                  className="input-glow w-full pl-10 pr-4 py-3 rounded-xl transition-colors"
+                  style={{ background: '#16181B', border: '1px solid rgba(255,255,255,0.11)', color: '#fff', outline: 'none' }}
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -77,7 +94,7 @@ const SuperAdminLogin = () => {
 
             <button
               type="submit"
-              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors shadow-lg shadow-indigo-200"
+              className="btn-primary w-full text-white font-semibold py-3 px-4 rounded-xl"
             >
               Authenticate
             </button>

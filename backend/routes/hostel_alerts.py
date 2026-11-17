@@ -4,8 +4,10 @@ import logging
 
 from flask import Blueprint, g, jsonify, request
 
-from services.auth_service import authenticate_vendor_access
+from services.auth_service import authenticate_vendor_access, verify_token
 from services.hostel_alert_service import get_settings, recent_deliveries, save_settings
+from services.staff_navigation_service import staff_can_access
+from db_factory import get_db_connection
 from utils import log_audit, vendor_has_feature
 
 
@@ -19,10 +21,39 @@ def _authorize():
     vendor_id, error = authenticate_vendor_access()
     if error:
         return None, error
-    if getattr(g, "user_role", None) not in MANAGER_ROLES:
-        return None, (jsonify({"error": "Hostel administrator access required"}), 403)
     if not vendor_id:
         return None, (jsonify({"error": "Select a company first"}), 400)
+
+    staff_token = request.headers.get("X-Leave-Staff-Token")
+    if staff_token:
+        claims = verify_token(staff_token)
+        if (
+            not claims
+            or claims.get("role") != "leave_staff"
+            or str(claims.get("vendor_id")) != str(vendor_id)
+        ):
+            return None, (jsonify({"error": "Staff session is invalid or expired"}), 401)
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT role, navbar_items FROM leave_staff WHERE id = ? AND vendor_id = ?",
+                (claims.get("staff_id"), vendor_id),
+            )
+            staff = cursor.fetchone()
+            role = staff["role"] if staff and hasattr(staff, "keys") else (staff[0] if staff else None)
+            nav = staff["navbar_items"] if staff and hasattr(staff, "keys") else (staff[1] if staff else None)
+            if not staff or str(role) != str(claims.get("staff_role")):
+                return None, (jsonify({"error": "Staff account is no longer active"}), 401)
+            if not staff_can_access(nav, "hostel_alerts"):
+                return None, (jsonify({
+                    "error": "Hostel Alerts is not enabled for this staff member",
+                    "code": "STAFF_NAV_FORBIDDEN",
+                }), 403)
+        finally:
+            conn.close()
+    elif getattr(g, "user_role", None) not in MANAGER_ROLES:
+        return None, (jsonify({"error": "Hostel administrator access required"}), 403)
 
     if getattr(g, "user_role", None) != "super_admin" and not vendor_has_feature(vendor_id, FEATURE_NAME):
         return None, (jsonify({

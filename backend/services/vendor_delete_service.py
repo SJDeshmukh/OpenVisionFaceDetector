@@ -32,6 +32,7 @@ DIRECT_DELETE_ORDER = (
     "parent_tokens",
     "parent_users",
     "active_sessions",
+    "external_auth_identities",
     "system_users",
     "faces",
     # Parent/configuration records.

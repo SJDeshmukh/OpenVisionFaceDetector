@@ -5,6 +5,27 @@ import { API_URL } from '../config';
 axios.defaults.withCredentials = true;
 
 const AuthContext = createContext();
+const STAFF_HEADER = 'X-Leave-Staff-Token';
+
+const applyStaffSession = (staff) => {
+  if (staff?.access_token) {
+    axios.defaults.headers.common[STAFF_HEADER] = staff.access_token;
+  } else {
+    delete axios.defaults.headers.common[STAFF_HEADER];
+  }
+};
+
+const signOutFirebase = async () => {
+  try {
+    const [{ signOut }, { firebaseAuth }] = await Promise.all([
+      import('firebase/auth'),
+      import('../lib/firebaseAuth'),
+    ]);
+    await signOut(firebaseAuth);
+  } catch {
+    // TapInX logout must still complete if Firebase is unavailable.
+  }
+};
 
 const withoutToken = (value) => {
   if (!value) return value;
@@ -57,6 +78,8 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('staffSession');
     clearSensitiveCaches();
     delete axios.defaults.headers.common.Authorization;
+    applyStaffSession(null);
+    signOutFirebase();
   }, [clearSensitiveCaches]);
 
   const refreshUserData = useCallback(async () => {
@@ -124,13 +147,16 @@ export const AuthProvider = ({ children }) => {
           const parsedStaff = JSON.parse(storedStaff);
           if (parsedStaff?.access_token) {
             setStaffSession(parsedStaff);
+            applyStaffSession(parsedStaff);
           } else {
             localStorage.removeItem('staffSession');
+            applyStaffSession(null);
           }
         }
       } catch {
         localStorage.removeItem('user');
         localStorage.removeItem('staffSession');
+        applyStaffSession(null);
       }
 
       // Do not render protected pages from localStorage until the httpOnly
@@ -181,6 +207,7 @@ export const AuthProvider = ({ children }) => {
           if (!previous?.access_token) return previous;
           const next = { ...previous, ...data.staff, access_token: previous.access_token };
           localStorage.setItem('staffSession', JSON.stringify(next));
+          applyStaffSession(next);
           return next;
         });
       } catch (error) {
@@ -188,6 +215,7 @@ export const AuthProvider = ({ children }) => {
         if (error.response?.status === 403) {
           setStaffSession(null);
           localStorage.removeItem('staffSession');
+          applyStaffSession(null);
         }
       }
     };
@@ -226,6 +254,9 @@ export const AuthProvider = ({ children }) => {
       });
       setUser(userData);
       localStorage.setItem('user', JSON.stringify(userData));
+      setStaffSession(null);
+      localStorage.removeItem('staffSession');
+      applyStaffSession(null);
       return {
         success: true, role: userData.role, vertical: userData.vertical, person_id: userData.person_id,
         redirect_url: response.data.redirect_url,
@@ -236,6 +267,62 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  const googleLogin = async () => {
+    try {
+      let deviceId = localStorage.getItem('web_device_id');
+      if (!deviceId) {
+        deviceId = `web-${crypto.randomUUID()}`;
+        localStorage.setItem('web_device_id', deviceId);
+      }
+
+      const [{ signInWithPopup }, { firebaseAuth, googleAuthProvider }] = await Promise.all([
+        import('firebase/auth'),
+        import('../lib/firebaseAuth'),
+      ]);
+      const credential = await signInWithPopup(firebaseAuth, googleAuthProvider);
+      const idToken = await credential.user.getIdToken(true);
+      const { data } = await axios.post(`${API_URL}/auth/google`, {
+        id_token: idToken,
+        device_id: deviceId,
+      });
+      if (data?.status !== 'success') {
+        throw new Error(data?.error || 'Google sign-in failed');
+      }
+
+      const staff = data.staff_session || null;
+      setStaffSession(staff);
+      if (staff?.access_token) localStorage.setItem('staffSession', JSON.stringify(staff));
+      else localStorage.removeItem('staffSession');
+      applyStaffSession(staff);
+
+      const current = await refreshUserData();
+      if (!current) throw new Error('Unable to load your TapInX account');
+      return {
+        success: true,
+        role: current.role,
+        vertical: current.vertical,
+        staff,
+        redirect_url: data.redirect_url,
+      };
+    } catch (error) {
+      applyStaffSession(null);
+      setStaffSession(null);
+      localStorage.removeItem('staffSession');
+      signOutFirebase();
+      const firebaseCode = String(error?.code || '');
+      if (firebaseCode === 'auth/popup-closed-by-user' || firebaseCode === 'auth/cancelled-popup-request') {
+        return { success: false, error: 'Google sign-in was cancelled.' };
+      }
+      if (firebaseCode === 'auth/popup-blocked') {
+        return { success: false, error: 'Your browser blocked the Google sign-in window. Allow pop-ups and try again.' };
+      }
+      return {
+        success: false,
+        error: error.response?.data?.error || error.message || 'Google sign-in failed',
+      };
+    }
+  };
+
   const loginAsStaff = async (pin) => {
     if (!user?.vendor_id) return { success: false, error: 'Not logged in' };
     try {
@@ -243,6 +330,7 @@ export const AuthProvider = ({ children }) => {
       if (data.status === 'success') {
         setStaffSession(data.staff);
         localStorage.setItem('staffSession', JSON.stringify(data.staff));
+        applyStaffSession(data.staff);
         return { success: true, staff: data.staff };
       }
       return { success: false, error: 'Invalid PIN' };
@@ -254,11 +342,12 @@ export const AuthProvider = ({ children }) => {
   const logoutStaff = () => {
     setStaffSession(null);
     localStorage.removeItem('staffSession');
+    applyStaffSession(null);
   };
 
   return (
     <AuthContext.Provider value={{
-      user, staffSession, login, logout, loginAsStaff, logoutStaff,
+      user, staffSession, login, googleLogin, logout, loginAsStaff, logoutStaff,
       loading, refreshFeatures: refreshUserData, refreshUserData,
     }}>
       {!loading && children}

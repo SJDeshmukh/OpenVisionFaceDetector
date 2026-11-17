@@ -362,6 +362,9 @@ def legacy_config():
 from routes.auth import auth_bp
 app.register_blueprint(auth_bp, url_prefix='/api')
 
+from routes.firebase_auth import firebase_auth_bp
+app.register_blueprint(firebase_auth_bp, url_prefix='/api')
+
 from routes.admin import admin_bp
 app.register_blueprint(admin_bp, url_prefix='/api/admin')
 

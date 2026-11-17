@@ -111,7 +111,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
     navItems = facultyNavItems;
   } else if (user?.role === 'owner') {
     navItems = ownerNavItems;
-  } else if (user?.role === 'admin' || user?.role === 'vendor_admin') {
+  } else if (user?.role === 'admin' || user?.role === 'vendor_admin' || user?.role === 'staff') {
     if (staffSession) {
       navItems = adminNavItems.filter(item => staffCanAccessPath(staffSession, item.path));
     } else {
@@ -136,7 +136,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
     const faceResetSupported = !['daily_wages', 'wages', 'factory', 'enterprise'].includes(vertical) &&
       user?.features?.includes('parent_login');
     const hostelAlertsSupported = (!staffSession || staffCanAccessNav(staffSession, 'hostel_alerts')) &&
-      ['vendor_admin', 'admin', 'owner'].includes(user?.role) &&
+      (['vendor_admin', 'admin', 'owner'].includes(user?.role) || (user?.role === 'staff' && Boolean(staffSession))) &&
       user?.features?.includes('hostel_attendance_alerts');
     const hostelAllocationSupported = Boolean(user?.features?.includes('hostel_allocation')) &&
       ((!staffSession && ['vendor_admin', 'admin', 'owner', 'rector', 'hod'].includes(user?.role)) ||
@@ -214,11 +214,10 @@ export const Sidebar = ({ isOpen, onClose }) => {
         >
           <div className="flex items-center gap-3">
             <div
-              className="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden flex-shrink-0"
+              className="w-9 h-9 rounded-[10px] flex items-center justify-center overflow-hidden flex-shrink-0"
               style={{
-                background: '#0A0A0A',
-                border: '1px solid rgba(255,255,255,0.14)',
-                boxShadow: '0 0 18px rgba(255,255,255,0.08)',
+                background: '#111315',
+                border: '1px solid rgba(255,255,255,0.12)',
               }}
             >
               <BrandLogo className="h-8 w-8" />
@@ -252,7 +251,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
               >
                 {({ isActive }) => (
                   <div
-                    className="relative flex items-center gap-3 px-3 py-2.5 rounded-xl overflow-hidden transition-all duration-200 group cursor-pointer"
+                    className="relative flex items-center gap-3 px-3 py-2.5 rounded-[10px] overflow-hidden transition-all duration-200 group cursor-pointer"
                     style={{
                       background: isActive
                 ? 'var(--bg-nav-active)'
@@ -296,7 +295,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
             >
               <div
                 className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
-                style={{ background: 'linear-gradient(135deg, #7C3AFF, #06D6FF)', color: '#fff' }}
+                style={{ background: '#7C3AFF', color: '#fff' }}
               >
                 {(staffSession?.name || user?.username || 'U').charAt(0).toUpperCase()}
               </div>
@@ -380,8 +379,8 @@ export const Topbar = ({ onToggleSidebar }) => {
         >
           <Bell size={18} />
           <span
-            className="absolute top-2 right-2 w-2 h-2 rounded-full animate-pulse"
-            style={{ background: '#FF2D87', boxShadow: '0 0 6px rgba(255,45,135,0.8)' }}
+            className="absolute top-2 right-2 w-2 h-2 rounded-full"
+            style={{ background: '#FF5C78', border: '1px solid var(--bg-topbar)' }}
           />
         </button>
 
@@ -406,7 +405,7 @@ export const Topbar = ({ onToggleSidebar }) => {
         >
           <div
             className="w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold flex-shrink-0"
-            style={{ background: 'linear-gradient(135deg, #7C3AFF, #06D6FF)', color: '#fff' }}
+            style={{ background: '#7C3AFF', color: '#fff' }}
           >
             {(staffSession?.name || user?.username || 'U').charAt(0).toUpperCase()}
           </div>
@@ -423,8 +422,8 @@ export const Topbar = ({ onToggleSidebar }) => {
         {/* Online indicator */}
         <div className="flex items-center gap-1.5 hidden sm:flex">
           <span
-            className="w-2 h-2 rounded-full animate-pulse"
-            style={{ background: 'var(--status-live)', boxShadow: '0 0 8px var(--status-live)' }}
+            className="w-2 h-2 rounded-full"
+            style={{ background: 'var(--status-live)' }}
           />
           <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--status-live)' }}>Live</span>
         </div>

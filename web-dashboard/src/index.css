@@ -1,9 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Manrope:wght@500;600;700;800&display=swap');
 @import "tailwindcss";
 
 @theme {
   /* Font */
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Manrope', 'Inter', ui-sans-serif, system-ui, sans-serif;
 
   /* Brand Colors */
   --color-brand:       #7C3AFF;
@@ -47,38 +48,41 @@
 
 /* ─── Variables ─────────────────────────────────────────── */
 :root {
-  --bg-body: #080808;
+  --bg-body: #08090A;
   --text-main: #FFFFFF;
-  --bg-sidebar: #050505;
-  --border-sidebar: rgba(255, 255, 255, 0.09);
-  --shadow-sidebar: 4px 0 32px rgba(0,0,0,0.6);
-  --bg-topbar: rgba(8, 8, 8, 0.92);
-  --shadow-topbar: 0 4px 24px rgba(0,0,0,0.4);
-  --text-muted: #A3A3A3;
+  --bg-sidebar: #0B0C0D;
+  --border-sidebar: rgba(255, 255, 255, 0.1);
+  --shadow-sidebar: none;
+  --bg-topbar: rgba(8, 9, 10, 0.9);
+  --shadow-topbar: none;
+  --text-muted: #9B9EA3;
   --text-muted-hover: #fff;
-  --bg-nav-active: rgba(255,255,255,0.09);
+  --bg-nav-active: rgba(255,255,255,0.075);
   --text-nav-active: #FFFFFF;
-  --text-nav-icon-active: #FFFFFF;
-  --bg-nav-hover: rgba(255,255,255,0.055);
+  --text-nav-icon-active: #B69AFF;
+  --bg-nav-hover: rgba(255,255,255,0.045);
   --text-nav-hover: #F5F5F5;
-  --bg-btn-ghost: rgba(255,255,255,0.055);
-  --bg-btn-ghost-hover: rgba(255,255,255,0.1);
-  --bg-search: rgba(255,255,255,0.04);
-  --border-search: rgba(255,255,255,0.1);
-  --border-search-focus: rgba(255,255,255,0.32);
-  --border-top: rgba(255,255,255,0.08);
+  --bg-btn-ghost: rgba(255,255,255,0.045);
+  --bg-btn-ghost-hover: rgba(255,255,255,0.085);
+  --bg-search: rgba(255,255,255,0.035);
+  --border-search: rgba(255,255,255,0.11);
+  --border-search-focus: rgba(182,154,255,0.72);
+  --border-top: rgba(255,255,255,0.085);
   --overlay-bg: rgba(0,0,0,0.82);
-  --user-chip-bg: rgba(255,255,255,0.055);
-  --user-chip-text: #A3A3A3;
-  --brand-subtitle: rgba(124,58,255,0.7);
+  --user-chip-bg: rgba(255,255,255,0.045);
+  --user-chip-text: #9B9EA3;
+  --brand-subtitle: #9B7BFF;
   --status-live: #00E87A;
+  --focus-ring: rgba(124, 58, 255, 0.22);
+  --surface-hover: #1A1C1F;
+  --shadow-card: 0 18px 55px rgba(0, 0, 0, 0.24);
   
   /* Dynamic Component Variables */
-  --bg-card: #111111;
-  --bg-card-alt: #171717;
-  --border-card: rgba(255, 255, 255, 0.09);
+  --bg-card: #111315;
+  --bg-card-alt: #16181B;
+  --border-card: rgba(255, 255, 255, 0.105);
   --text-primary: #FFFFFF;
-  --text-secondary: #B8B8B8;
+  --text-secondary: #A8ABB0;
 }
 
 [data-theme="light"] {
@@ -107,6 +111,9 @@
   --user-chip-text: #475569;
   --brand-subtitle: #6D28D9;
   --status-live: #059669;
+  --focus-ring: rgba(124, 58, 255, 0.14);
+  --surface-hover: #F1F5F9;
+  --shadow-card: 0 12px 36px rgba(15, 23, 42, 0.06);
   
   /* Dynamic Component Variables */
   --bg-card: #FFFFFF;
@@ -131,6 +138,22 @@
     background-color: var(--bg-body);
     color: var(--text-main);
     font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    letter-spacing: -0.008em;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: 'Manrope', 'Inter', ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: -0.035em;
   }
 
   ::selection {
@@ -360,53 +383,47 @@
 
 /* Glass surface */
 .glass-surface {
-  background: var(--overlay-bg, rgba(13, 12, 42, 0.85));
+  background: rgba(17, 19, 21, 0.9);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--border-card);
 }
 
 .glass-card {
-  background: rgba(17, 16, 50, 0.8);
+  background: rgba(17, 19, 21, 0.92);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(124, 58, 255, 0.18);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-card);
+  box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
-/* Primary gradient button */
+/* Primary action: restrained brand color with a crisp operational feel. */
 .btn-primary {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg, #7C3AFF 0%, #5B1EE8 100%);
+  background: #7C3AFF;
   color: white;
   border: none;
   cursor: pointer;
   font-weight: 600;
-  letter-spacing: 0.02em;
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
-  box-shadow: 0 6px 24px rgba(124, 58, 255, 0.4);
+  letter-spacing: -0.01em;
+  transition: transform 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
 }
 
 .btn-primary::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 55%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
-  animation: shimmerSlide 3s ease-in-out infinite 1.2s;
+  content: none;
 }
 
 .btn-primary:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 12px 36px rgba(124, 58, 255, 0.55), 0 0 0 1px rgba(124, 58, 255, 0.3);
+  transform: translateY(-1px);
+  background: #8C52FF;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
 }
 
 .btn-primary:active {
   transform: translateY(0) scale(0.98);
-  box-shadow: 0 4px 16px rgba(124, 58, 255, 0.35);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.28);
 }
 
 .btn-primary:disabled {
@@ -436,8 +453,8 @@
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .input-glow:focus {
-  border-color: rgba(124, 58, 255, 0.55) !important;
-  box-shadow: 0 0 0 3px rgba(124, 58, 255, 0.12), 0 0 20px rgba(124, 58, 255, 0.08);
+  border-color: rgba(182, 154, 255, 0.7) !important;
+  box-shadow: 0 0 0 3px var(--focus-ring);
   outline: none;
 }
 
@@ -529,11 +546,11 @@
   left: 0;
   top: 50%;
   transform: translateY(-50%);
-  width: 3px;
-  height: 56%;
+  width: 2px;
+  height: 48%;
   border-radius: 0 3px 3px 0;
-  background: linear-gradient(180deg, #7C3AFF, #06D6FF);
-  box-shadow: 0 0 10px rgba(124, 58, 255, 0.9), 0 0 20px rgba(124, 58, 255, 0.4);
+  background: #9B7BFF;
+  box-shadow: none;
 }
 
 /* Status badge */
@@ -544,11 +561,78 @@
 
 /* Card hover lift */
 .card-hover {
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .card-hover:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 16px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(124,58,255,0.12);
+  transform: translateY(-2px);
+  border-color: rgba(255,255,255,0.16);
+  box-shadow: var(--shadow-card);
+}
+
+/* Application shell ------------------------------------------------------ */
+.app-shell {
+  background:
+    radial-gradient(circle at 74% -18%, rgba(124, 58, 255, 0.08), transparent 34rem),
+    var(--bg-body);
+}
+
+.app-content {
+  position: relative;
+}
+
+.app-content > * {
+  animation: pageReveal 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.app-content h1 {
+  font-weight: 750;
+  line-height: 1.12;
+}
+
+.app-content h2,
+.app-content h3 {
+  line-height: 1.2;
+}
+
+:root:not([data-theme="light"]) .app-content .bg-white,
+:root:not([data-theme="light"]) .app-content .bg-slate-50,
+:root:not([data-theme="light"]) .app-content .bg-gray-50 {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025), var(--shadow-card);
+}
+
+:root:not([data-theme="light"]) .app-content table thead {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+:root:not([data-theme="light"]) .app-content table tbody tr {
+  transition: background-color 150ms ease;
+}
+
+:root:not([data-theme="light"]) .app-content table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.022);
+}
+
+:root:not([data-theme="light"]) .app-content input:not([type="checkbox"]):not([type="radio"]),
+:root:not([data-theme="light"]) .app-content select,
+:root:not([data-theme="light"]) .app-content textarea {
+  color: var(--text-primary);
+}
+
+:root:not([data-theme="light"]) .app-content input:not([type="checkbox"]):not([type="radio"]):focus,
+:root:not([data-theme="light"]) .app-content select:focus,
+:root:not([data-theme="light"]) .app-content textarea:focus {
+  border-color: rgba(182, 154, 255, 0.68) !important;
+  box-shadow: 0 0 0 3px var(--focus-ring) !important;
+  outline: none;
+}
+
+@keyframes pageReveal {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-content > * { animation: none; }
 }
 
 /* Toggle Switch */
