@@ -31,6 +31,7 @@ from services.attendance_state_service import (
     reconcile_person_timeline,
 )
 from services.manual_attendance_action_service import (
+    normalize_manual_action,
     should_use_manual_kiosk_mode,
     validate_manual_action,
 )
@@ -56,6 +57,10 @@ from services.person_scope_service import (
 )
 from services.report_filter_service import custom_value
 from services.academic_lifecycle_service import resolve_enrollment
+from services.attendance_query_service import (
+    build_operational_date_filter,
+    resolve_operational_date,
+)
 attendance_core_bp = Blueprint('attendance_core_bp', __name__)
 
 def _resolve_event_time(timestamp):
@@ -633,6 +638,12 @@ def person_event(valid_data: PersonEventSchema):
     # two requests both deriving CHECK_IN from the same prior state.
     if person_id and vendor_id_to_check:
         if getattr(conn, "_is_pg", False):
+            # Serialize the state transition across all Gunicorn workers. The
+            # face-row lock remains as a second guard for this registered person.
+            c.execute(
+                "SELECT pg_advisory_xact_lock(?, ?)",
+                (int(vendor_id_to_check), int(person_id)),
+            )
             c.execute(
                 "SELECT id FROM faces WHERE id = ? AND vendor_id = ? FOR UPDATE",
                 (person_id, vendor_id_to_check),
@@ -655,7 +666,7 @@ def person_event(valid_data: PersonEventSchema):
         conn.close()
         return jsonify({"error": "Unsupported event_source"}), 400
 
-    provided_status = str(valid_data.status or "").strip().upper()
+    provided_status = normalize_manual_action(valid_data.status)
     # KIOSK_MANUAL is accepted only as a marker on timestamped queue replays.
     # Live clients cannot use it to override the tenant's configured mode.
     client_event_source = (
@@ -674,7 +685,16 @@ def person_event(valid_data: PersonEventSchema):
             if mode_row and str(mode_row[0] or "").strip().lower() == "manual":
                 current_attendance_action_mode = "manual"
         except Exception:
-            logger.debug("Attendance action mode lookup failed", exc_info=True)
+            # Never reinterpret a manual action as an automatic punch when the
+            # tenant setting cannot be read.
+            logger.exception("Attendance action mode lookup failed")
+            conn.close()
+            return jsonify({
+                "error": "Attendance mode could not be verified",
+                "code": "ATTENDANCE_MODE_UNAVAILABLE",
+                "accepted": False,
+                "speak": False,
+            }), 503
     resolved_mode_effective_from_utc = None
     attendance_action_mode = current_attendance_action_mode
     if valid_data.timestamp and vendor_id_to_check:
@@ -700,6 +720,27 @@ def person_event(valid_data: PersonEventSchema):
         bool(valid_data.timestamp),
         attendance_action_mode,
     )
+    declared_mode = str(valid_data.mode_at_creation or "").strip().lower()
+    if (
+        not valid_data.timestamp
+        and client_event_source == AttendanceEventSource.KIOSK.value
+        and declared_mode == "manual"
+        and provided_status in ("CHECK_IN", "CHECK_OUT")
+        and not manual_kiosk_mode
+    ):
+        latest_status, latest_timestamp = latest_person_state(
+            c, vendor_id_to_check, person_id
+        )
+        conn.close()
+        return jsonify({
+            "speak": True,
+            "text": "Attendance mode changed. Refresh the kiosk settings before scanning.",
+            "accepted": False,
+            "reason": "attendance_mode_mismatch",
+            "latest_status": latest_status,
+            "latest_timestamp": latest_timestamp,
+            "person_id": person_id,
+        }), 409
     # A timestamped KIOSK replay without the dedicated manual source is an
     # automatic event from an older/current automatic queue. If mode history
     # says manual at that time, it has no trustworthy operator-selected action.
@@ -791,11 +832,27 @@ def person_event(valid_data: PersonEventSchema):
 
     if manual_kiosk_mode:
         target_attendance_date = shift_policy.attendance_date(current_time_obj)
+        shift_start, shift_end = shift_policy.attendance_day_bounds(
+            target_attendance_date
+        )
         c.execute(
             """SELECT status, timestamp FROM attendance
                WHERE vendor_id = ? AND person_id = ?
+                 AND (
+                      attendance_date = ?
+                      OR (
+                          attendance_date IS NULL
+                          AND timestamp >= ? AND timestamp < ?
+                      )
+                 )
                ORDER BY timestamp ASC, id ASC""",
-            (vendor_id_to_check, person_id),
+            (
+                vendor_id_to_check,
+                person_id,
+                target_attendance_date.isoformat(),
+                shift_start.isoformat(sep=" "),
+                shift_end.isoformat(sep=" "),
+            ),
         )
         shift_day_events = []
         for event_row in c.fetchall() or []:
@@ -804,7 +861,7 @@ def person_event(valid_data: PersonEventSchema):
                 event_time is not None
                 and shift_policy.attendance_date(event_time) == target_attendance_date
             ):
-                shift_day_events.append((str(event_row[0] or "").upper(), event_time))
+                shift_day_events.append((normalize_manual_action(event_row[0]), event_time))
 
         manual_decision = validate_manual_action(
             manual_action_status, shift_day_events, current_time_obj, name
@@ -1283,12 +1340,15 @@ def get_attendance(valid_data: AttendanceFilterSchema):
             params.append(scoped_pid)
         else:
             query += " AND 1 = 0"
-    if s_date:
-        query += f" AND a.timestamp >= {placeholder}"
-        params.append(f"{s_date} 00:00:00")
-    if e_date:
-        query += f" AND a.timestamp < {placeholder}"
-        params.append((datetime.strptime(e_date, '%Y-%m-%d') + timedelta(days=2)).strftime('%Y-%m-%d 00:00:00'))
+    if s_date or e_date:
+        # Persisted attendance_date is the operational/shift day at capture
+        # time. It remains correct even after an employee's shift is changed.
+        # Timestamp bounds are retained only for pre-migration legacy rows.
+        date_clause, date_params = build_operational_date_filter(
+            s_date, e_date, placeholder=placeholder
+        )
+        query += date_clause
+        params.extend(date_params)
     if name:
         query += f" AND a.name ILIKE {placeholder}" if is_pg else f" AND a.name LIKE {placeholder}"
         params.append(f"%{name}%")
@@ -1340,7 +1400,9 @@ def get_attendance(valid_data: AttendanceFilterSchema):
         r = dict(row) if hasattr(row, "keys") else dict(zip(columns, row))
         row_timestamp = parse_db_datetime(r.get("timestamp"))
         shift_policy = choose_shift_policy(company_shifts, r.get("shift"))
-        attendance_day = shift_policy.attendance_date(row_timestamp) if row_timestamp else None
+        attendance_day = resolve_operational_date(
+            r.get("attendance_date"), row_timestamp, shift_policy
+        )
         # Shift-aware date boundary check (handles overnight shifts crossing midnight)
         if s_date and (attendance_day is None or attendance_day.isoformat() < s_date):
             continue

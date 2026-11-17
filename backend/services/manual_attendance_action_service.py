@@ -5,6 +5,30 @@ from datetime import datetime
 from typing import Iterable, Optional
 
 
+_ACTION_ALIASES = {
+    "CHECK_IN": "CHECK_IN",
+    "CHECKIN": "CHECK_IN",
+    "CHECK IN": "CHECK_IN",
+    "IN": "CHECK_IN",
+    "CHECK_OUT": "CHECK_OUT",
+    "CHECKOUT": "CHECK_OUT",
+    "CHECK OUT": "CHECK_OUT",
+    "OUT": "CHECK_OUT",
+}
+
+
+def normalize_manual_action(value: object) -> str:
+    """Return the canonical status used by the attendance state machine.
+
+    Historical rows and older integrations used labels such as Check In.
+    Treating those rows as unknown makes a second check-in look valid, so the
+    backend normalizes every stored and requested action before validation.
+    """
+
+    raw = str(value or "").strip().upper().replace("-", "_")
+    return _ACTION_ALIASES.get(raw, raw)
+
+
 @dataclass(frozen=True)
 class ManualActionDecision:
     accepted: bool
@@ -45,16 +69,15 @@ def validate_manual_action(
 ) -> ManualActionDecision:
     """Require explicit actions to alternate within the active shift day."""
 
-    normalized = str(action or "").strip().upper()
+    normalized = normalize_manual_action(action)
     safe_name = str(name or "Employee").strip() or "Employee"
     events = sorted(
         [
-            (str(status or "").strip().upper(), timestamp)
+            (normalize_manual_action(status), timestamp)
             for status, timestamp in shift_day_events
             if (
                 isinstance(timestamp, datetime)
-                and str(status or "").strip().upper()
-                in {"CHECK_IN", "CHECK_OUT"}
+                and normalize_manual_action(status) in {"CHECK_IN", "CHECK_OUT"}
                 and timestamp <= current_time
             )
         ],

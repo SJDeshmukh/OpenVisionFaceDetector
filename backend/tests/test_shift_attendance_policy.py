@@ -27,6 +27,18 @@ def test_early_morning_punch_belongs_to_previous_shift_day():
     assert scheduled_payable_hours(policy, 8) == 8
 
 
+def test_attendance_day_bounds_match_operational_date_membership():
+    overnight = _work_shift()
+    start, end = overnight.attendance_day_bounds(date(2026, 10, 29))
+    assert start == datetime(2026, 10, 29, 6, 0)
+    assert end == datetime(2026, 10, 30, 6, 0)
+
+    daytime = ShiftPolicy(None, "Day", "09:00", "17:00")
+    start, end = daytime.attendance_day_bounds(date(2026, 10, 29))
+    assert start == datetime(2026, 10, 29, 0, 0)
+    assert end == datetime(2026, 10, 30, 0, 0)
+
+
 def test_open_checkin_over_16_hours_checks_out_within_same_shift_day():
     assert next_attendance_status(
         "CHECK_IN",

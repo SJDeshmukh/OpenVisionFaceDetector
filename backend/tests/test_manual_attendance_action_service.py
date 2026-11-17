@@ -2,6 +2,7 @@ from datetime import datetime
 
 from services.attendance_shift_service import ShiftPolicy
 from services.manual_attendance_action_service import (
+    normalize_manual_action,
     should_use_manual_kiosk_mode,
     validate_manual_action,
 )
@@ -52,6 +53,22 @@ def test_checkout_requires_an_earlier_checkin():
     decision = validate_manual_action("CHECK_OUT", [], now, "Anant")
     assert not decision.accepted
     assert decision.reason == "not_checked_in"
+
+
+def test_legacy_status_labels_cannot_bypass_manual_transition_rules():
+    now = datetime(2026, 11, 5, 8, 30)
+    assert normalize_manual_action("Check In") == "CHECK_IN"
+    assert normalize_manual_action("check-out") == "CHECK_OUT"
+
+    duplicate = validate_manual_action(
+        "CHECK_IN", [("Check In", datetime(2026, 11, 5, 8, 0))], now, "Anant"
+    )
+    assert not duplicate.accepted
+    assert duplicate.reason == "already_checked_in"
+
+    invalid_checkout = validate_manual_action("Check Out", [], now, "Anant")
+    assert not invalid_checkout.accepted
+    assert invalid_checkout.reason == "not_checked_in"
 
 
 def test_six_am_shift_groups_pre_six_am_checkout_with_previous_day():

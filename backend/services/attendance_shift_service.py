@@ -180,6 +180,18 @@ class ShiftPolicy:
         )
         return start, end
 
+    def attendance_day_bounds(self, attendance_day: date) -> tuple[datetime, datetime]:
+        """Return the half-open window used by attendance_date."""
+
+        if self.is_cross_midnight:
+            start = datetime.combine(
+                attendance_day,
+                time(self.start_minutes // 60, self.start_minutes % 60),
+            )
+            return start, start + timedelta(days=1)
+        start = datetime.combine(attendance_day, time.min)
+        return start, start + timedelta(days=1)
+
 
 def default_shift_policy() -> ShiftPolicy:
     return ShiftPolicy(

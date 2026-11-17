@@ -702,6 +702,7 @@ def _init_pg_schema_on_conn(conn):
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_day_time ON attendance(vendor_id, attendance_date, timestamp)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_person ON attendance(person_id)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_person ON attendance(vendor_id, person_id)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_person_time ON attendance(vendor_id, person_id, timestamp)",
@@ -1285,6 +1286,7 @@ def init_sqlite_schema(conn):
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_day_time ON attendance(vendor_id, attendance_date, timestamp)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_person ON attendance(person_id)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_person ON attendance(vendor_id, person_id)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_person_time ON attendance(vendor_id, person_id, timestamp)",

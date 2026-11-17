@@ -15,6 +15,16 @@ class AttendanceFilterSchema(BaseModel):
     limit: Optional[int] = 500
     offset: Optional[int] = 0
 
+    @validator('start_date', 'end_date')
+    def validate_attendance_date(cls, value):
+        if value in (None, ''):
+            return None
+        normalized = str(value).strip()
+        try:
+            return datetime.strptime(normalized, '%Y-%m-%d').date().isoformat()
+        except (TypeError, ValueError):
+            raise ValueError('attendance dates must use YYYY-MM-DD')
+
     @validator('person_type')
     def validate_person_type(cls, value):
         if value is None:
