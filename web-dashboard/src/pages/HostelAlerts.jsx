@@ -351,8 +351,22 @@ export default function HostelAlerts() {
         <div className="grid gap-5 p-5 md:grid-cols-2 md:p-6 xl:grid-cols-4">
           <label className="block">
             <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-700"><Phone size={15} className="text-indigo-500" /> Administrator WhatsApp</span>
-            <input inputMode="tel" value={settings.owner_phone || ''} onChange={(event) => update('owner_phone', event.target.value)} placeholder="+91 98765 43210" className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none transition focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-50" />
-            <span className="mt-1.5 block text-[11px] text-slate-400">Include country code for reliable delivery.</span>
+            <input
+              inputMode="tel"
+              value={settings.owner_phone || ''}
+              onChange={(event) => setSettings((current) => ({
+                ...current,
+                owner_phone: event.target.value,
+                owner_phone_source: 'hostel_settings',
+              }))}
+              placeholder="+91 98765 43210"
+              className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none transition focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-50"
+            />
+            <span className={`mt-1.5 block text-[11px] ${settings.owner_phone_source === 'qr_connection' ? 'font-medium text-emerald-600' : 'text-slate-400'}`}>
+              {settings.owner_phone_source === 'qr_connection'
+                ? 'Automatically filled from the QR-connected WhatsApp account. You can replace it.'
+                : 'Include country code for reliable delivery.'}
+            </span>
           </label>
           <label className="block">
             <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-700"><Clock3 size={15} className="text-indigo-500" /> Daily entry cutoff</span>

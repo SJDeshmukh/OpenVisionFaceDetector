@@ -206,7 +206,38 @@ def get_settings(vendor_id, connection_factory=None):
             c.execute("SELECT * FROM hostel_alert_settings WHERE vendor_id = ?", (vendor_id,))
             row = c.fetchone()
         columns = [item[0] for item in c.description]
-        return _row_dict(row, columns)
+        settings = _row_dict(row, columns)
+
+        # The number captured while pairing the vendor's WhatsApp account is a
+        # sensible default for operational summaries. Keep a separately saved
+        # hostel administrator number authoritative when one has been entered.
+        try:
+            c.execute("""
+                SELECT phone_number
+                FROM vendor_whatsapp_settings
+                WHERE vendor_id = ?
+                LIMIT 1
+            """, (vendor_id,))
+            whatsapp_row = c.fetchone()
+            connected_phone = whatsapp_row[0] if whatsapp_row and not hasattr(whatsapp_row, "keys") else (
+                whatsapp_row["phone_number"] if whatsapp_row else None
+            )
+        except Exception as exc:
+            logger.debug(
+                "Connected WhatsApp number unavailable for hostel alert settings vendor %s: %s",
+                vendor_id,
+                exc,
+            )
+            connected_phone = None
+
+        connected_phone = _valid_phone(connected_phone)
+        configured_phone = _valid_phone(settings.get("owner_phone"))
+        settings["connected_whatsapp_phone"] = connected_phone
+        settings["owner_phone_source"] = "hostel_settings" if configured_phone else (
+            "qr_connection" if connected_phone else None
+        )
+        settings["owner_phone"] = configured_phone or connected_phone
+        return settings
     finally:
         conn.close()
 
@@ -405,7 +436,9 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
         ensure_tables(conn)
         c = conn.cursor()
         c.execute("""
-            SELECT h.vendor_id, h.enabled, h.owner_phone, h.cutoff_time,
+            SELECT h.vendor_id, h.enabled,
+                   COALESCE(NULLIF(TRIM(h.owner_phone), ''), w.phone_number) AS owner_phone,
+                   h.cutoff_time,
                    h.escalation_minutes, h.timezone, h.student_template,
                    h.parent_template, h.owner_summary_enabled, h.schedule_revision,
                    v.status AS vendor_status, s.features,

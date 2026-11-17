@@ -22,7 +22,7 @@ def _database(tmp_path):
     conn.executescript("""
         CREATE TABLE vendors (id INTEGER PRIMARY KEY, status TEXT, vertical TEXT);
         CREATE TABLE subscriptions (vendor_id INTEGER, features TEXT);
-        CREATE TABLE vendor_whatsapp_settings (vendor_id INTEGER, status TEXT);
+        CREATE TABLE vendor_whatsapp_settings (vendor_id INTEGER, status TEXT, phone_number TEXT);
         CREATE TABLE faces (id INTEGER PRIMARY KEY, vendor_id INTEGER, name TEXT, phone TEXT, custom_data TEXT);
         CREATE TABLE attendance (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, status TEXT, timestamp DATETIME, attendance_date DATE);
         CREATE TABLE leave_requests (id INTEGER PRIMARY KEY, vendor_id INTEGER, student_id INTEGER, leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, final_status TEXT, rector_status TEXT);
@@ -31,7 +31,7 @@ def _database(tmp_path):
 
         INSERT INTO vendors VALUES (1, 'active', 'hostel');
         INSERT INTO subscriptions VALUES (1, '["hostel_attendance_alerts"]');
-        INSERT INTO vendor_whatsapp_settings VALUES (1, 'connected');
+        INSERT INTO vendor_whatsapp_settings VALUES (1, 'connected', '919000000099');
         INSERT INTO faces VALUES
             (1, 1, 'Late Resident', '9000000001', '{"person_type":"student","parent_phone":"9000000002"}'),
             (2, 1, 'Inside Resident', '9000000003', '{"person_type":"student","parent_phone":"9000000004"}'),
@@ -75,6 +75,46 @@ def test_cutoff_and_parent_escalation_are_idempotent(tmp_path):
     assert first["sent"] == 3  # resident, parent, owner summary
     assert second["sent"] == 0
     assert [phone for _vendor, phone, _message in sent] == ["9000000001", "9000000002", "9000000099"]
+
+
+def test_qr_connected_number_defaults_hostel_administrator_recipient(tmp_path):
+    factory = _database(tmp_path)
+    saved = save_settings(1, {
+        "enabled": True,
+        "cutoff_time": "19:00",
+        "escalation_minutes": 60,
+        "timezone": "Asia/Kolkata",
+        "owner_summary_enabled": True,
+    }, connection_factory=factory)
+    sent = []
+
+    result = process_due_alerts(
+        datetime(2026, 9, 21, 14, 31, tzinfo=timezone.utc),  # 20:01 IST
+        connection_factory=factory,
+        sender=lambda vendor_id, phone, message: sent.append(phone) or {"success": True},
+    )
+
+    assert saved["owner_phone"] == "919000000099"
+    assert saved["connected_whatsapp_phone"] == "919000000099"
+    assert saved["owner_phone_source"] == "qr_connection"
+    assert result["sent"] == 3
+    assert sent == ["9000000001", "9000000002", "919000000099"]
+
+
+def test_explicit_hostel_administrator_number_overrides_qr_number(tmp_path):
+    factory = _database(tmp_path)
+
+    saved = save_settings(1, {
+        "enabled": False,
+        "owner_phone": "919111111111",
+        "cutoff_time": "19:00",
+        "escalation_minutes": 60,
+        "timezone": "Asia/Kolkata",
+    }, connection_factory=factory)
+
+    assert saved["owner_phone"] == "919111111111"
+    assert saved["connected_whatsapp_phone"] == "919000000099"
+    assert saved["owner_phone_source"] == "hostel_settings"
 
 
 def test_entry_after_student_warning_suppresses_parent_alert(tmp_path):
