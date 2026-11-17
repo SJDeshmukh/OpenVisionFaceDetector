@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { Fragment, useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -9,6 +9,7 @@ import {
   MapPin,
   User,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   RefreshCw
 } from 'lucide-react';
@@ -25,6 +26,8 @@ const Attendance = () => {
   const [error, setError] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [expandedRow, setExpandedRow] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [paginationWarning, setPaginationWarning] = useState(null);
   const lastRequestIdRef = useRef(0);
   const parseDate = (timestamp) => {
     if (!timestamp) return new Date();
@@ -80,6 +83,8 @@ const Attendance = () => {
 
   useEffect(() => {
     fetchLogs(); // Trigger fetch on mount and filter change
+    setCurrentPage(1);
+    setExpandedRow(null);
   }, [filters, personType]);
 
   useEffect(() => {
@@ -161,18 +166,41 @@ const Attendance = () => {
       if (filters.deviceName && String(filters.deviceName).trim() !== '') {
         params.append('device_name', filters.deviceName);
       }
-      // One attendance day can contain at least two punches for every person.
-      // The old 100-row cap kept the latest checkouts while silently dropping
-      // the earlier check-ins, which made valid pairs look like orphan exits.
-      params.append('limit', '500');
       if (forceRefresh) {
         params.append('nocache', '1');
       }
       const headers = forceRefresh ? { 'Cache-Control': 'no-cache' } : {};
-      const response = await axios.get(`${API_URL}/attendance?${params.toString()}`, { headers });
-      if (requestId !== lastRequestIdRef.current) return;
-      const list = response.data?.attendance || [];
+      const batchSize = 500;
+      const maximumEvents = 10000;
+      const eventsById = new Map();
+      let offset = 0;
+      let hasMore = true;
+
+      while (hasMore && offset < maximumEvents) {
+        params.set('limit', String(batchSize));
+        params.set('offset', String(offset));
+        const response = await axios.get(`${API_URL}/attendance?${params.toString()}`, { headers });
+        if (requestId !== lastRequestIdRef.current) return;
+
+        const batch = response.data?.attendance || [];
+        batch.forEach((item) => {
+          const key = item.id != null
+            ? `id:${item.id}`
+            : `${item.person_id || item.name}:${item.timestamp}:${item.status}`;
+          eventsById.set(key, item);
+        });
+        const pageInfo = response.data?.pagination;
+        hasMore = pageInfo ? pageInfo.has_more === true : batch.length === batchSize;
+        offset += batchSize;
+      }
+
+      const list = Array.from(eventsById.values());
       setLogs(list);
+      setPaginationWarning(
+        hasMore
+          ? `More than ${maximumEvents.toLocaleString()} events match these filters. Narrow the date range to view every record.`
+          : null
+      );
       try {
         const setNames = new Set();
         list.forEach(l => {
@@ -185,6 +213,7 @@ const Attendance = () => {
     } catch (error) {
       if (requestId !== lastRequestIdRef.current) return;
       console.error("Error fetching logs:", error);
+      setPaginationWarning(null);
       if (error.response && error.response.status === 403) {
         setError(error.response.data.error || "Access Denied");
       }
@@ -299,6 +328,7 @@ const Attendance = () => {
   // Convert to array and sort by latest timestamp
   const sortedGroups = Object.entries(groupedLogs)
     .map(([_, group]) => ({
+      key: group.key,
       name: group.name,
       person_id: group.person_id,
       attendanceDate: group.attendanceDate,
@@ -306,6 +336,17 @@ const Attendance = () => {
       latestLog: group.logs.sort((a, b) => parseDate(b.timestamp) - parseDate(a.timestamp))[0]
     }))
     .sort((a, b) => parseDate(b.latestLog.timestamp) - parseDate(a.latestLog.timestamp));
+
+  const groupsPerPage = 25;
+  const totalPages = Math.max(1, Math.ceil(sortedGroups.length / groupsPerPage));
+  const visiblePage = Math.min(currentPage, totalPages);
+  const pageStart = (visiblePage - 1) * groupsPerPage;
+  const paginatedGroups = sortedGroups.slice(pageStart, pageStart + groupsPerPage);
+
+  const changePage = (page) => {
+    setCurrentPage(Math.max(1, Math.min(page, totalPages)));
+    setExpandedRow(null);
+  };
 
   return (
     <div className="space-y-6">
@@ -372,6 +413,12 @@ const Attendance = () => {
             <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
           </svg>
           <span className="font-medium">{error}</span>
+        </div>
+      )}
+
+      {paginationWarning && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg">
+          {paginationWarning}
         </div>
       )}
 
@@ -467,20 +514,19 @@ const Attendance = () => {
               ) : sortedGroups.length === 0 ? (
                 <tr><td colSpan="8" className="p-8 text-center text-slate-500">No attendance records found.</td></tr>
               ) : (
-                sortedGroups.map((group, idx) => {
+                paginatedGroups.map((group) => {
                   const log = group.latestLog; // Show latest log in summary
                   const status = getStatus(log);
-                  const isExpanded = expandedRow === idx;
+                  const isExpanded = expandedRow === group.key;
 
                   return (
-                    <>
+                    <Fragment key={group.key}>
                       <tr
-                        key={idx}
                         className={cn(
                           "hover:bg-slate-50/80 transition-colors cursor-pointer",
                           isExpanded ? "bg-slate-50" : ""
                         )}
-                        onClick={() => setExpandedRow(isExpanded ? null : idx)}
+                        onClick={() => setExpandedRow(isExpanded ? null : group.key)}
                       >
                         <td className="px-6 py-4">
                           {isExpanded ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
@@ -600,13 +646,41 @@ const Attendance = () => {
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   );
                 })
               )}
             </tbody>
           </table>
         </div>
+        {sortedGroups.length > 0 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-200 px-6 py-4">
+            <p className="text-sm text-slate-500">
+              Showing {pageStart + 1}–{Math.min(pageStart + groupsPerPage, sortedGroups.length)} of {sortedGroups.length} employee-day records
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => changePage(visiblePage - 1)}
+                disabled={visiblePage === 1}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft size={16} /> Previous
+              </button>
+              <span className="px-2 text-sm font-medium text-slate-600">
+                Page {visiblePage} of {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => changePage(visiblePage + 1)}
+                disabled={visiblePage === totalPages}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Next <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

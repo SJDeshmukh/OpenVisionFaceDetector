@@ -1378,6 +1378,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     c.execute(query, params)
     columns = [description[0] for description in c.description]
     rows = c.fetchall()
+    raw_row_count = len(rows)
     c.execute(f"SELECT shifts FROM companies WHERE vendor_id = {placeholder} LIMIT 1", (vendor_id,))
     company_row = c.fetchone()
     company_shifts = parse_shift_list(company_row[0] if company_row else None)
@@ -1445,7 +1446,18 @@ def get_attendance(valid_data: AttendanceFilterSchema):
         })
     # LIMIT/OFFSET are now applied in SQL. The Python slice below is kept as a
     # safety net for custom_data dynamic filters that may further reduce the set.
-    result = {"attendance": attendance}
+    result = {
+        "attendance": attendance,
+        "pagination": {
+            "limit": sql_limit,
+            "offset": sql_offset,
+            # This count is intentionally taken before Python-side dynamic
+            # filtering. Clients can continue through every SQL batch even
+            # when one batch contains few matching custom-data rows.
+            "raw_count": raw_row_count,
+            "has_more": raw_row_count == sql_limit,
+        },
+    }
     cache_set(cache_key, result, 60)
     return jsonify(result)
 
