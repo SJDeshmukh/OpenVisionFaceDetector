@@ -4,6 +4,7 @@ from services.attendance_sequence_repair_service import (
     AttendanceProjectionRow,
     apply_findings,
     find_invalid_transitions,
+    load_projection_rows,
 )
 
 
@@ -56,6 +57,40 @@ def test_missing_operational_date_is_audit_only_for_night_shift_safety():
     findings = find_invalid_transitions(rows)
 
     assert len(findings) == 1
+    assert findings[0].repair_eligible is False
+
+
+def test_legacy_sqlite_schema_without_operational_date_or_event_ledger_can_be_audited():
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        """
+        CREATE TABLE attendance (
+            id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER,
+            name TEXT, timestamp TEXT, status TEXT, device_id TEXT, activity TEXT
+        );
+        INSERT INTO attendance VALUES
+            (1, 8, 101, 'Anant', '2026-11-05 08:00:00', 'CHECK_IN', NULL, 'Work'),
+            (2, 8, 101, 'Anant', '2026-11-05 08:00:30', 'CHECK_IN', NULL, 'Work');
+        """
+    )
+
+    rows = load_projection_rows(
+        connection.cursor(),
+        8,
+        "2026-11-05",
+        "2026-11-05",
+        attendance_columns={
+            "id", "vendor_id", "person_id", "name", "timestamp", "status",
+            "device_id", "activity",
+        },
+        event_columns=set(),
+    )
+    findings = find_invalid_transitions(rows)
+
+    assert len(rows) == 2
+    assert [(item.row.attendance_id, item.reason) for item in findings] == [
+        (2, "duplicate_check_in")
+    ]
     assert findings[0].repair_eligible is False
 
 

@@ -25,6 +25,16 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+try:
+    from dotenv import load_dotenv
+
+    # Gunicorn loads this file before importing db_factory. Standalone
+    # maintenance commands must do the same or they silently select the local
+    # SQLite database when DATABASE_URL is defined only in .env.
+    load_dotenv(BACKEND_ROOT / ".env")
+except ImportError:
+    pass
+
 from services.attendance_sequence_repair_service import (
     apply_findings,
     find_invalid_transitions,
@@ -46,6 +56,11 @@ def main():
     parser.add_argument("--end-date", type=_iso_date, required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--actor", help="Required with --apply for the repair audit trail")
+    parser.add_argument(
+        "--allow-sqlite-apply",
+        action="store_true",
+        help="Explicitly allow apply mode on a primary SQLite installation",
+    )
     args = parser.parse_args()
 
     if args.vendor_id <= 0:
@@ -57,17 +72,35 @@ def main():
 
     # Keep the database dependency lazy so help/argument validation can run in
     # lightweight maintenance environments.
-    from db_factory import get_db_connection
+    from db_factory import get_db_connection, get_table_columns
 
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
+        database_backend = "postgres" if getattr(connection, "_is_pg", False) else "sqlite"
+        if args.apply and database_backend != "postgres" and not args.allow_sqlite_apply:
+            raise RuntimeError(
+                "Refusing to apply repairs to SQLite. Confirm this is the primary "
+                "database and rerun with --allow-sqlite-apply if intentional."
+            )
+        attendance_columns = get_table_columns(
+            connection, "attendance", force_refresh=True
+        )
+        event_columns = get_table_columns(
+            connection, "attendance_events", force_refresh=True
+        )
         rows = load_projection_rows(
-            cursor, args.vendor_id, args.start_date, args.end_date
+            cursor,
+            args.vendor_id,
+            args.start_date,
+            args.end_date,
+            attendance_columns=attendance_columns,
+            event_columns=event_columns,
         )
         findings = find_invalid_transitions(rows)
         output = {
             "mode": "apply" if args.apply else "dry-run",
+            "database_backend": database_backend,
             "vendor_id": args.vendor_id,
             "start_date": args.start_date,
             "end_date": args.end_date,

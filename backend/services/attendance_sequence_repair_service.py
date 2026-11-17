@@ -125,22 +125,61 @@ def find_invalid_transitions(
     return findings
 
 
-def load_projection_rows(cursor, vendor_id: int, start_date: str, end_date: str):
-    """Load one tenant/date range with parameterized filtering."""
+def load_projection_rows(
+    cursor,
+    vendor_id: int,
+    start_date: str,
+    end_date: str,
+    *,
+    attendance_columns=None,
+    event_columns=None,
+):
+    """Load one tenant/date range with parameterized filtering.
+
+    Column lists come only from database metadata. They allow a dry audit of
+    older SQLite installations that predate ``attendance_date`` or the event
+    ledger, without interpolating any user-controlled identifier.
+    """
+
+    known_attendance_columns = (
+        {str(item).strip().lower() for item in attendance_columns}
+        if attendance_columns is not None
+        else {"attendance_date"}
+    )
+    known_event_columns = (
+        {str(item).strip().lower() for item in event_columns}
+        if event_columns is not None
+        else {"source", "legacy_attendance_id"}
+    )
+    has_attendance_date = "attendance_date" in known_attendance_columns
+    has_event_source = {"source", "legacy_attendance_id"}.issubset(
+        known_event_columns
+    )
+    attendance_date_select = "a.attendance_date" if has_attendance_date else "NULL"
+    operational_date_expr = (
+        "COALESCE(a.attendance_date, DATE(a.timestamp))"
+        if has_attendance_date
+        else "DATE(a.timestamp)"
+    )
+    source_select = (
+        """(SELECT MIN(e.source)
+               FROM attendance_events e
+              WHERE e.legacy_attendance_id = a.id)"""
+        if has_event_source
+        else "NULL"
+    )
 
     cursor.execute(
-        """SELECT a.id, a.vendor_id, a.person_id, a.name, a.timestamp,
-                  a.status, a.attendance_date, a.device_id, a.activity,
-                  (SELECT MIN(e.source)
-                     FROM attendance_events e
-                    WHERE e.legacy_attendance_id = a.id) AS source
+        f"""SELECT a.id, a.vendor_id, a.person_id, a.name, a.timestamp,
+                  a.status, {attendance_date_select}, a.device_id, a.activity,
+                  {source_select} AS source
              FROM attendance a
             WHERE a.vendor_id = ?
               AND a.person_id IS NOT NULL
-              AND COALESCE(a.attendance_date, DATE(a.timestamp)) >= ?
-              AND COALESCE(a.attendance_date, DATE(a.timestamp)) <= ?
+              AND {operational_date_expr} >= ?
+              AND {operational_date_expr} <= ?
             ORDER BY a.person_id,
-                     COALESCE(a.attendance_date, DATE(a.timestamp)),
+                     {operational_date_expr},
                      a.timestamp, a.id""",
         (vendor_id, start_date, end_date),
     )
