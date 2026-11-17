@@ -161,7 +161,10 @@ const Attendance = () => {
       if (filters.deviceName && String(filters.deviceName).trim() !== '') {
         params.append('device_name', filters.deviceName);
       }
-      params.append('limit', '100');
+      // One attendance day can contain at least two punches for every person.
+      // The old 100-row cap kept the latest checkouts while silently dropping
+      // the earlier check-ins, which made valid pairs look like orphan exits.
+      params.append('limit', '500');
       if (forceRefresh) {
         params.append('nocache', '1');
       }
@@ -258,8 +261,24 @@ const Attendance = () => {
 
   const showShiftColumn = user?.features?.includes('shifts') && !!(filterOptions.dynamic_filters && filterOptions.dynamic_filters.shift);
 
+  const operationalDateKey = (log) => {
+    const storedDate = String(log.attendance_date || '').trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(storedDate)) return storedDate;
+    return getLocalDateString(parseDate(log.timestamp));
+  };
+
+  const formatOperationalDate = (value) => {
+    const parts = String(value || '').split('-').map(Number);
+    if (parts.length === 3 && parts.every(Number.isFinite)) {
+      return new Date(parts[0], parts[1] - 1, parts[2]).toLocaleDateString();
+    }
+    return value || '';
+  };
+
   const groupedLogs = logs.reduce((acc, log) => {
-    const logDate = parseDate(log.timestamp).toLocaleDateString();
+    // Group by the immutable shift/operational day from the backend. Grouping
+    // by the timestamp's calendar date splits overnight IN/OUT pairs.
+    const logDate = operationalDateKey(log);
     const key = log.person_id 
       ? `id:${log.person_id}-${logDate}` 
       : `name:${log.vendor_id || 'unknown'}:${log.name}-${logDate}`;
@@ -269,6 +288,7 @@ const Attendance = () => {
         key,
         name: log.name,
         person_id: log.person_id || null,
+        attendanceDate: logDate,
         logs: []
       };
     }
@@ -281,6 +301,7 @@ const Attendance = () => {
     .map(([_, group]) => ({
       name: group.name,
       person_id: group.person_id,
+      attendanceDate: group.attendanceDate,
       logs: group.logs.sort((a, b) => parseDate(b.timestamp) - parseDate(a.timestamp)),
       latestLog: group.logs.sort((a, b) => parseDate(b.timestamp) - parseDate(a.timestamp))[0]
     }))
@@ -492,7 +513,7 @@ const Attendance = () => {
                           </td>
                         )}
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                          {parseDate(log.timestamp).toLocaleDateString()}
+                          {formatOperationalDate(group.attendanceDate)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-slate-700">
                           {parseDate(log.timestamp).toLocaleTimeString()}
