@@ -28,6 +28,7 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { API_URL } from '../config';
 import ActivityDashboard from '../components/ActivityDashboard';
+import CountUpNumber from '../components/CountUpNumber';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 import { getBusinessTerminology, usesStudentRecords, isHostelVertical } from '../lib/businessTerminology';
@@ -37,7 +38,7 @@ const KpiCard = ({ title, value, subtext, icon: Icon, color }) => (
     <div className="flex justify-between items-start z-10">
       <div>
         <p className="text-sm font-medium text-slate-500 mb-1">{title}</p>
-        <h3 className="text-3xl font-bold text-slate-800">{value}</h3>
+        <h3 className="text-3xl font-bold text-slate-800"><CountUpNumber value={value} /></h3>
       </div>
       <div className={`p-3 rounded-lg ${color}`}>
         <Icon size={22} className="text-white" />

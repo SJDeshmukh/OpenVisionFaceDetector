@@ -7,6 +7,7 @@ import { useSocket } from '../context/SocketContext';
 import RegistrationConfigEditor from '../components/RegistrationConfigEditor';
 import FleetMapTab from '../components/FleetMapTab';
 import PageLoader from '../components/PageLoader';
+import CountUpNumber from '../components/CountUpNumber';
 import { DEFAULT_STAFF_NAV_KEYS, staffNavItemsForFeatures, toggleStaffNavKey } from '../lib/staffNavigation';
 
 const REPORT_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -2208,7 +2209,7 @@ const SuperAdminDashboard = () => {
             <StatCard label="Total Vendors" value={stats.total_vendors} icon={<Shield className="text-blue-600" size={24} />} />
             <StatCard label="Active Vendors" value={stats.active_vendors} icon={<Check className="text-green-600" size={24} />} />
             <StatCard label="Total Employees" value={stats.total_employees} icon={<User className="text-purple-600" size={24} />} />
-            <StatCard label="Monthly Revenue" value={`₹${(stats.monthly_recurring_revenue || 0).toLocaleString()}`} icon={<DollarSign className="text-emerald-600" size={24} />} />
+            <StatCard label="Monthly Revenue" value={stats.monthly_recurring_revenue || 0} prefix="₹" icon={<DollarSign className="text-emerald-600" size={24} />} />
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
             <StatCard label="Live Streams" value={stats.active_streaming_devices} icon={<Activity className="text-orange-600" size={24} />} />
@@ -5727,12 +5728,12 @@ const SuperAdminDashboard = () => {
   );
 };
 
-const StatCard = ({ label, value, icon, color }) => (
+const StatCard = ({ label, value, prefix = '', suffix = '', icon, color }) => (
   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
     <div className="p-3 bg-slate-50 rounded-lg">{icon}</div>
     <div>
       <div className="text-slate-500 text-sm font-medium">{label}</div>
-      <div className={`text-2xl font-bold ${color || 'text-slate-800'}`}>{value}</div>
+      <div className={`text-2xl font-bold ${color || 'text-slate-800'}`}><CountUpNumber value={value} prefix={prefix} suffix={suffix} /></div>
     </div>
   </div>
 );
