@@ -29,6 +29,7 @@ import OwnerAdvances from './pages/OwnerAdvances';
 import HostelAlerts from './pages/HostelAlerts';
 import HostelAllocation from './pages/HostelAllocation';
 import PrivacyPolicy from './pages/PrivacyPolicy';
+import WeatherThemeManager from './components/WeatherThemeManager';
 
 import { usesStudentRecords } from './lib/businessTerminology';
 import { staffCanAccessNav } from './lib/staffNavigation';
@@ -124,6 +125,7 @@ function App() {
     <AuthProvider>
       <SocketProvider>
         <BrowserRouter>
+          <WeatherThemeManager />
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/privacy-policy" element={<PrivacyPolicy />} />

@@ -431,6 +431,9 @@ app.register_blueprint(academic_bp, url_prefix='/api')
 from routes.notification_center import notification_center_bp
 app.register_blueprint(notification_center_bp, url_prefix='/api')
 
+from routes.weather_theme import weather_theme_bp
+app.register_blueprint(weather_theme_bp, url_prefix='/api')
+
 register_error_handlers(app)
 
 # --- Serve Frontend (SPA) ---

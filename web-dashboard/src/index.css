@@ -939,6 +939,344 @@
   .app-shell::before { animation: none; }
 }
 
+/* Weather-based seasonal atmosphere ------------------------------------
+   These tokens layer over the existing Day/Night system. Removing the
+   data-weather-theme attribute restores the original palette verbatim. */
+html[data-weather-theme="summer"] {
+  --weather-scene-bg: linear-gradient(145deg, #11151d 0%, #18283b 42%, #4c2736 100%);
+  --weather-shell-base: rgba(9, 15, 22, 0.84);
+  --bg-body: #0d151e;
+  --bg-sidebar: rgba(9, 14, 22, 0.84);
+  --bg-topbar: rgba(10, 16, 24, 0.78);
+  --bg-card: rgba(21, 27, 37, 0.86);
+  --bg-card-alt: rgba(28, 34, 45, 0.86);
+  --glass-card-bg: rgba(24, 30, 40, 0.64);
+  --glass-surface-bg: rgba(18, 24, 34, 0.72);
+  --glass-border: rgba(255, 193, 119, 0.18);
+  --glass-border-hover: rgba(255, 178, 102, 0.38);
+  --ambient-primary: rgba(255, 177, 77, 0.2);
+  --ambient-secondary: rgba(255, 91, 132, 0.15);
+  --ambient-tertiary: rgba(90, 186, 255, 0.1);
+  --border-card: rgba(255, 205, 145, 0.14);
+  --border-sidebar: rgba(255, 202, 139, 0.13);
+  --bg-nav-active: linear-gradient(90deg, rgba(255, 158, 69, 0.21), rgba(255, 101, 141, 0.08));
+  --text-nav-active: #ffd094;
+  --text-nav-icon-active: #ffb65f;
+}
+
+html[data-weather-theme="rainy"] {
+  --weather-scene-bg: linear-gradient(150deg, #07111b 0%, #10263a 48%, #1d1e43 100%);
+  --weather-shell-base: rgba(4, 12, 20, 0.82);
+  --bg-body: #07131d;
+  --bg-sidebar: rgba(5, 15, 24, 0.86);
+  --bg-topbar: rgba(6, 17, 27, 0.8);
+  --bg-card: rgba(10, 25, 35, 0.86);
+  --bg-card-alt: rgba(15, 31, 43, 0.88);
+  --glass-card-bg: rgba(9, 25, 37, 0.62);
+  --glass-surface-bg: rgba(8, 22, 34, 0.72);
+  --glass-border: rgba(116, 202, 255, 0.17);
+  --glass-border-hover: rgba(116, 210, 255, 0.34);
+  --ambient-primary: rgba(62, 188, 236, 0.18);
+  --ambient-secondary: rgba(100, 91, 255, 0.17);
+  --ambient-tertiary: rgba(75, 232, 222, 0.09);
+  --border-card: rgba(132, 210, 255, 0.14);
+  --border-sidebar: rgba(121, 200, 255, 0.13);
+  --bg-nav-active: linear-gradient(90deg, rgba(64, 186, 238, 0.2), rgba(100, 91, 255, 0.08));
+  --text-nav-active: #98dcff;
+  --text-nav-icon-active: #6ecfff;
+}
+
+html[data-weather-theme="winter"] {
+  --weather-scene-bg: linear-gradient(145deg, #0b1220 0%, #172a3f 48%, #252141 100%);
+  --weather-shell-base: rgba(7, 14, 25, 0.83);
+  --bg-body: #0b1522;
+  --bg-sidebar: rgba(8, 16, 28, 0.86);
+  --bg-topbar: rgba(9, 18, 31, 0.8);
+  --bg-card: rgba(15, 27, 41, 0.86);
+  --bg-card-alt: rgba(21, 34, 50, 0.88);
+  --glass-card-bg: rgba(14, 28, 43, 0.63);
+  --glass-surface-bg: rgba(12, 25, 40, 0.72);
+  --glass-border: rgba(176, 226, 255, 0.18);
+  --glass-border-hover: rgba(186, 221, 255, 0.38);
+  --ambient-primary: rgba(119, 219, 255, 0.17);
+  --ambient-secondary: rgba(168, 132, 255, 0.16);
+  --ambient-tertiary: rgba(194, 242, 255, 0.1);
+  --border-card: rgba(188, 227, 255, 0.15);
+  --border-sidebar: rgba(178, 222, 255, 0.14);
+  --bg-nav-active: linear-gradient(90deg, rgba(127, 213, 255, 0.19), rgba(163, 133, 255, 0.09));
+  --text-nav-active: #c5eaff;
+  --text-nav-icon-active: #92dfff;
+}
+
+html[data-weather-theme="autumn"] {
+  --weather-scene-bg: linear-gradient(145deg, #18100f 0%, #33201c 46%, #44203c 100%);
+  --weather-shell-base: rgba(20, 12, 13, 0.84);
+  --bg-body: #191110;
+  --bg-sidebar: rgba(22, 13, 14, 0.87);
+  --bg-topbar: rgba(24, 15, 16, 0.8);
+  --bg-card: rgba(35, 22, 20, 0.87);
+  --bg-card-alt: rgba(44, 28, 24, 0.88);
+  --glass-card-bg: rgba(42, 25, 22, 0.62);
+  --glass-surface-bg: rgba(34, 21, 20, 0.72);
+  --glass-border: rgba(255, 172, 95, 0.18);
+  --glass-border-hover: rgba(255, 159, 77, 0.39);
+  --ambient-primary: rgba(244, 132, 51, 0.2);
+  --ambient-secondary: rgba(201, 63, 101, 0.16);
+  --ambient-tertiary: rgba(255, 211, 106, 0.09);
+  --border-card: rgba(255, 182, 111, 0.15);
+  --border-sidebar: rgba(255, 173, 105, 0.14);
+  --bg-nav-active: linear-gradient(90deg, rgba(244, 128, 45, 0.22), rgba(197, 56, 101, 0.08));
+  --text-nav-active: #ffc080;
+  --text-nav-icon-active: #ff9c4f;
+}
+
+html[data-weather-theme="snow"] {
+  --weather-scene-bg: linear-gradient(145deg, #09101d 0%, #142b44 48%, #2f2b57 100%);
+  --weather-shell-base: rgba(5, 12, 23, 0.81);
+  --bg-body: #091422;
+  --bg-sidebar: rgba(7, 15, 27, 0.86);
+  --bg-topbar: rgba(8, 17, 30, 0.79);
+  --bg-card: rgba(13, 27, 43, 0.84);
+  --bg-card-alt: rgba(20, 35, 53, 0.86);
+  --glass-card-bg: rgba(14, 29, 46, 0.59);
+  --glass-surface-bg: rgba(11, 25, 42, 0.7);
+  --glass-border: rgba(215, 242, 255, 0.2);
+  --glass-border-hover: rgba(222, 239, 255, 0.44);
+  --ambient-primary: rgba(152, 225, 255, 0.2);
+  --ambient-secondary: rgba(181, 159, 255, 0.18);
+  --ambient-tertiary: rgba(238, 252, 255, 0.11);
+  --border-card: rgba(218, 241, 255, 0.17);
+  --border-sidebar: rgba(207, 238, 255, 0.16);
+  --bg-nav-active: linear-gradient(90deg, rgba(174, 228, 255, 0.2), rgba(170, 145, 255, 0.1));
+  --text-nav-active: #e2f5ff;
+  --text-nav-icon-active: #b8eaff;
+}
+
+/* Weather palettes preserve light-mode contrast while carrying the same hue. */
+html[data-theme="light"][data-weather-theme="summer"] {
+  --weather-scene-bg: linear-gradient(145deg, #fff9e9 0%, #ffe2d5 51%, #f1e4ff 100%);
+  --weather-shell-base: rgba(255, 250, 241, 0.72);
+  --bg-body: #fff9ee; --bg-sidebar: rgba(255, 253, 247, 0.86); --bg-topbar: rgba(255, 252, 246, 0.82);
+  --bg-card: #fffaf2; --bg-card-alt: #fff3e7; --glass-card-bg: rgba(255, 255, 255, 0.68);
+  --glass-surface-bg: rgba(255, 252, 247, 0.78); --glass-border: rgba(255, 255, 255, 0.84);
+  --glass-border-hover: rgba(236, 129, 54, 0.28); --ambient-primary: rgba(255, 166, 71, 0.16);
+  --ambient-secondary: rgba(239, 94, 146, 0.1); --border-card: rgba(224, 141, 82, 0.18);
+  --bg-nav-active: linear-gradient(90deg, rgba(234, 128, 48, 0.16), rgba(239, 94, 146, 0.06));
+  --text-nav-active: #a94b18; --text-nav-icon-active: #c76423;
+}
+
+html[data-theme="light"][data-weather-theme="rainy"] {
+  --weather-scene-bg: linear-gradient(145deg, #edf8ff 0%, #dbeaf7 48%, #ecebff 100%);
+  --weather-shell-base: rgba(240, 248, 255, 0.7);
+  --bg-body: #eef7fc; --bg-sidebar: rgba(247, 252, 255, 0.86); --bg-topbar: rgba(244, 251, 255, 0.82);
+  --bg-card: #f5fbff; --bg-card-alt: #eaf4fa; --glass-card-bg: rgba(255, 255, 255, 0.66);
+  --glass-surface-bg: rgba(247, 252, 255, 0.76); --glass-border: rgba(255, 255, 255, 0.82);
+  --glass-border-hover: rgba(54, 144, 202, 0.28); --ambient-primary: rgba(40, 164, 220, 0.14);
+  --ambient-secondary: rgba(94, 84, 217, 0.1); --border-card: rgba(79, 157, 202, 0.18);
+  --bg-nav-active: linear-gradient(90deg, rgba(39, 145, 199, 0.15), rgba(94, 84, 217, 0.06));
+  --text-nav-active: #12638f; --text-nav-icon-active: #1c7da9;
+}
+
+html[data-theme="light"][data-weather-theme="winter"] {
+  --weather-scene-bg: linear-gradient(145deg, #f4fbff 0%, #e8f4ff 48%, #f1edff 100%);
+  --weather-shell-base: rgba(246, 251, 255, 0.72);
+  --bg-body: #f4faff; --bg-sidebar: rgba(250, 253, 255, 0.87); --bg-topbar: rgba(248, 252, 255, 0.83);
+  --bg-card: #f9fcff; --bg-card-alt: #edf6fd; --glass-card-bg: rgba(255, 255, 255, 0.68);
+  --glass-surface-bg: rgba(250, 253, 255, 0.78); --glass-border: rgba(255, 255, 255, 0.86);
+  --glass-border-hover: rgba(88, 151, 199, 0.25); --ambient-primary: rgba(92, 188, 230, 0.13);
+  --ambient-secondary: rgba(137, 108, 218, 0.09); --border-card: rgba(110, 163, 200, 0.17);
+  --bg-nav-active: linear-gradient(90deg, rgba(73, 152, 198, 0.14), rgba(137, 108, 218, 0.06));
+  --text-nav-active: #285f88; --text-nav-icon-active: #377dac;
+}
+
+html[data-theme="light"][data-weather-theme="autumn"] {
+  --weather-scene-bg: linear-gradient(145deg, #fff8ee 0%, #ffe7d5 48%, #f8e5ed 100%);
+  --weather-shell-base: rgba(255, 249, 241, 0.72);
+  --bg-body: #fff8ef; --bg-sidebar: rgba(255, 252, 247, 0.87); --bg-topbar: rgba(255, 251, 245, 0.82);
+  --bg-card: #fffaf4; --bg-card-alt: #faeee5; --glass-card-bg: rgba(255, 255, 255, 0.67);
+  --glass-surface-bg: rgba(255, 251, 246, 0.77); --glass-border: rgba(255, 255, 255, 0.84);
+  --glass-border-hover: rgba(194, 96, 48, 0.28); --ambient-primary: rgba(222, 112, 45, 0.15);
+  --ambient-secondary: rgba(172, 52, 89, 0.09); --border-card: rgba(193, 111, 63, 0.18);
+  --bg-nav-active: linear-gradient(90deg, rgba(205, 99, 41, 0.15), rgba(172, 52, 89, 0.06));
+  --text-nav-active: #9d431d; --text-nav-icon-active: #bc592a;
+}
+
+html[data-theme="light"][data-weather-theme="snow"] {
+  --weather-scene-bg: linear-gradient(145deg, #f8fdff 0%, #e9f6ff 48%, #eeecff 100%);
+  --weather-shell-base: rgba(248, 252, 255, 0.69);
+  --bg-body: #f6fbff; --bg-sidebar: rgba(251, 254, 255, 0.85); --bg-topbar: rgba(250, 253, 255, 0.81);
+  --bg-card: #fbfdff; --bg-card-alt: #edf7fd; --glass-card-bg: rgba(255, 255, 255, 0.63);
+  --glass-surface-bg: rgba(251, 254, 255, 0.74); --glass-border: rgba(255, 255, 255, 0.9);
+  --glass-border-hover: rgba(106, 162, 206, 0.29); --ambient-primary: rgba(110, 203, 239, 0.14);
+  --ambient-secondary: rgba(139, 116, 221, 0.1); --border-card: rgba(124, 173, 207, 0.18);
+  --bg-nav-active: linear-gradient(90deg, rgba(84, 163, 204, 0.14), rgba(139, 116, 221, 0.06));
+  --text-nav-active: #2b6589; --text-nav-icon-active: #3d83ad;
+}
+
+html[data-weather-theme] body {
+  background: var(--weather-scene-bg) fixed;
+}
+
+html[data-weather-theme] .app-shell {
+  background:
+    radial-gradient(ellipse 48rem 32rem at 30% -8%, var(--ambient-primary), transparent 70%),
+    radial-gradient(ellipse 42rem 36rem at 102% 34%, var(--ambient-secondary), transparent 72%),
+    radial-gradient(ellipse 38rem 32rem at 7% 92%, var(--ambient-tertiary), transparent 72%),
+    var(--weather-shell-base);
+  transition: background 700ms ease, color 500ms ease;
+}
+
+html[data-weather-theme] :is(.glass-card, .glass-surface, .app-content > div, aside, header) {
+  transition: background-color 650ms ease, border-color 650ms ease, box-shadow 650ms ease, color 450ms ease;
+}
+
+.weather-atmosphere {
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 700ms ease;
+}
+
+html[data-weather-theme] .weather-atmosphere { opacity: 1; }
+
+.weather-attribution {
+  position: fixed;
+  z-index: 36;
+  left: calc(16rem + 14px);
+  bottom: 8px;
+  display: none;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--text-tertiary);
+  background: var(--glass-surface-bg);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  opacity: 0.7;
+  transition: opacity 180ms ease, border-color 180ms ease;
+}
+
+html[data-weather-theme] .weather-attribution { display: block; }
+.weather-attribution:hover { color: var(--text-main); opacity: 1; border-color: var(--glass-border-hover); }
+
+@media (max-width: 1023px) {
+  .weather-attribution { left: 10px; }
+}
+
+.weather-atmosphere > span {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+}
+
+.weather-atmosphere__sky { inset: 0; }
+.weather-atmosphere__orb { border-radius: 999px; }
+.weather-atmosphere__particles,
+.weather-atmosphere__foreground { inset: -12%; }
+
+html[data-weather-theme="summer"] .weather-atmosphere__sky {
+  background:
+    linear-gradient(128deg, transparent 0 46%, rgba(255, 210, 151, 0.09) 47% 48%, transparent 49% 100%),
+    radial-gradient(circle at 72% 18%, rgba(255, 218, 142, 0.24), transparent 25%);
+}
+html[data-weather-theme="summer"] .weather-atmosphere__orb {
+  width: min(30vw, 360px); aspect-ratio: 1; right: -5vw; top: -8vw;
+  background: radial-gradient(circle at 36% 38%, #fff9d9 0 3%, #ffd772 13%, rgba(255, 137, 72, 0.42) 45%, transparent 70%);
+  filter: blur(2px); animation: weatherSunPulse 7s ease-in-out infinite alternate;
+}
+html[data-weather-theme="summer"] .weather-atmosphere__particles {
+  background-image: radial-gradient(circle, rgba(255, 226, 170, 0.48) 0 1px, transparent 1.8px);
+  background-size: 46px 46px; animation: weatherMotes 20s linear infinite;
+}
+html[data-weather-theme="summer"][data-weather-is-day="false"] .weather-atmosphere__orb {
+  background: radial-gradient(circle at 36% 38%, #ffffff 0 7%, #cfe8ff 27%, rgba(151, 155, 255, 0.25) 52%, transparent 70%);
+  opacity: 0.74;
+}
+html[data-weather-is-day="false"] .weather-atmosphere__sky { filter: brightness(0.78) saturate(1.15); }
+
+html[data-weather-theme="rainy"] .weather-atmosphere__sky {
+  background:
+    radial-gradient(ellipse 56% 24% at 28% 8%, rgba(114, 173, 211, 0.2), transparent 74%),
+    radial-gradient(ellipse 45% 20% at 82% 15%, rgba(116, 104, 207, 0.16), transparent 72%);
+}
+html[data-weather-theme="rainy"] .weather-atmosphere__particles {
+  inset: -25%; opacity: 0.46;
+  background-image: repeating-linear-gradient(104deg, transparent 0 18px, rgba(168, 225, 255, 0.38) 19px 20px, transparent 21px 46px);
+  background-size: 140px 220px; animation: weatherRain 1.15s linear infinite;
+}
+html[data-weather-theme="rainy"] .weather-atmosphere__foreground {
+  background: radial-gradient(ellipse 50% 8% at 50% 102%, rgba(100, 195, 235, 0.17), transparent 72%);
+  animation: weatherRainGlow 5s ease-in-out infinite alternate;
+}
+
+html[data-weather-theme="winter"] .weather-atmosphere__sky {
+  background:
+    linear-gradient(132deg, transparent 0 38%, rgba(211, 239, 255, 0.07) 39% 40%, transparent 41% 100%),
+    radial-gradient(ellipse 55% 28% at 72% 10%, rgba(185, 224, 255, 0.16), transparent 72%);
+}
+html[data-weather-theme="winter"] .weather-atmosphere__particles {
+  filter: blur(18px); opacity: 0.5;
+  background: radial-gradient(ellipse 28% 10% at 20% 30%, rgba(210, 241, 255, 0.18), transparent 72%), radial-gradient(ellipse 35% 9% at 75% 65%, rgba(185, 193, 255, 0.17), transparent 72%);
+  animation: weatherWinterMist 16s ease-in-out infinite alternate;
+}
+
+html[data-weather-theme="autumn"] .weather-atmosphere__sky {
+  background:
+    linear-gradient(130deg, transparent 0 46%, rgba(255, 188, 112, 0.08) 47% 48%, transparent 49% 100%),
+    radial-gradient(circle at 18% 18%, rgba(239, 138, 65, 0.2), transparent 27%);
+}
+html[data-weather-theme="autumn"] .weather-atmosphere__particles {
+  opacity: 0.46;
+  background-image:
+    radial-gradient(ellipse 7px 3px at 12px 12px, #e99146 48%, transparent 56%),
+    radial-gradient(ellipse 6px 3px at 38px 37px, #d0525d 48%, transparent 56%),
+    radial-gradient(ellipse 5px 2px at 72px 19px, #f0bd59 48%, transparent 56%);
+  background-size: 96px 86px; animation: weatherLeaves 18s linear infinite;
+}
+
+html[data-weather-theme="snow"] .weather-atmosphere__sky {
+  background:
+    linear-gradient(135deg, transparent 0 43%, rgba(224, 245, 255, 0.08) 44% 45%, transparent 46% 100%),
+    radial-gradient(ellipse 52% 25% at 68% 8%, rgba(199, 224, 255, 0.18), transparent 72%);
+}
+html[data-weather-theme="snow"] .weather-atmosphere__particles,
+html[data-weather-theme="snow"] .weather-atmosphere__foreground {
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, 0.86) 0 1.5px, transparent 2.2px),
+    radial-gradient(circle, rgba(220, 242, 255, 0.7) 0 2.2px, transparent 3px),
+    radial-gradient(circle, rgba(255, 255, 255, 0.55) 0 0.9px, transparent 1.8px);
+  background-position: 0 0, 44px 62px, 90px 24px;
+  background-size: 110px 120px, 155px 175px, 75px 90px;
+  animation: weatherSnow 15s linear infinite;
+}
+html[data-weather-theme="snow"] .weather-atmosphere__foreground {
+  filter: blur(1px); opacity: 0.44; transform: scale(1.2); animation-duration: 9s;
+}
+
+@keyframes weatherSunPulse {
+  from { transform: scale(0.94); opacity: 0.72; }
+  to { transform: scale(1.06); opacity: 1; }
+}
+@keyframes weatherMotes { to { transform: translate3d(46px, -46px, 0); } }
+@keyframes weatherRain { to { transform: translate3d(-55px, 220px, 0); } }
+@keyframes weatherRainGlow { to { opacity: 0.45; transform: scaleX(1.08); } }
+@keyframes weatherWinterMist { to { transform: translate3d(5%, -2%, 0) scale(1.08); } }
+@keyframes weatherLeaves { to { transform: translate3d(96px, 86px, 0) rotate(3deg); } }
+@keyframes weatherSnow { to { transform: translate3d(22px, 175px, 0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .weather-atmosphere *,
+  html[data-weather-theme] .app-shell { animation: none !important; transition-duration: 0.01ms !important; }
+}
+
 /* Toggle Switch */
 .toggle-checkbox:checked { right: 0; border-color: #00E87A; }
 .toggle-checkbox:checked + .toggle-label { background-color: #00E87A; }

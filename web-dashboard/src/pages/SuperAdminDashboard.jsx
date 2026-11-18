@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff, UploadCloud, Box, Mail, Send, Clock, AlertCircle, MapPin, MessageSquare, Camera } from 'lucide-react';
+import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff, UploadCloud, Box, Mail, Send, Clock, AlertCircle, MapPin, MessageSquare, Camera, CloudSun } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
@@ -171,6 +171,9 @@ const SuperAdminDashboard = () => {
   const { user } = useAuth();
   const [vendors, setVendors] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [weatherThemeEnabled, setWeatherThemeEnabled] = useState(false);
+  const [weatherThemeLoading, setWeatherThemeLoading] = useState(true);
+  const [weatherThemeSaving, setWeatherThemeSaving] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [passwordModal, setPasswordModal] = useState({ show: false, username: '' });
   const [deleteModal, setDeleteModal] = useState({ show: false, vendor: null });
@@ -644,6 +647,36 @@ const SuperAdminDashboard = () => {
     } catch (e) { }
   };
 
+  const fetchWeatherThemeSetting = async () => {
+    setWeatherThemeLoading(true);
+    try {
+      const { data } = await axios.get(`${API_URL}/admin/weather-theme`);
+      setWeatherThemeEnabled(Boolean(data?.enabled));
+    } catch (error) {
+      console.error('Unable to load weather theme setting:', error);
+    } finally {
+      setWeatherThemeLoading(false);
+    }
+  };
+
+  const toggleWeatherThemes = async () => {
+    if (weatherThemeSaving || weatherThemeLoading) return;
+    const enabled = !weatherThemeEnabled;
+    setWeatherThemeSaving(true);
+    try {
+      const { data } = await axios.put(`${API_URL}/admin/weather-theme`, { enabled });
+      const savedEnabled = Boolean(data?.enabled);
+      setWeatherThemeEnabled(savedEnabled);
+      window.dispatchEvent(new CustomEvent('tapinx:weather-theme-setting', {
+        detail: { enabled: savedEnabled },
+      }));
+    } catch (error) {
+      alert(error.response?.data?.error || 'Unable to update weather themes.');
+    } finally {
+      setWeatherThemeSaving(false);
+    }
+  };
+
   const { socket, joinSuperAdmin } = useSocket();
   const maxUsersRef = useRef(null);
   const maxEmployeesRef = useRef(null);
@@ -656,6 +689,7 @@ const SuperAdminDashboard = () => {
     fetchStats();
     fetchTemplates();
     fetchBusinessTypes();
+    fetchWeatherThemeSetting();
 
     if (!socket) return;
     const doJoin = () => joinSuperAdmin();
@@ -2136,6 +2170,40 @@ const SuperAdminDashboard = () => {
 
       {activeTab === 'overview' && (
         <>
+          <section className="weather-theme-admin-card mb-5 overflow-hidden rounded-2xl border border-sky-200/70 bg-gradient-to-r from-sky-50 via-white to-violet-50 shadow-sm">
+            <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+              <div className="flex min-w-0 items-start gap-3.5">
+                <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-600 text-white shadow-lg shadow-sky-200/60">
+                  <CloudSun size={22} />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-bold text-slate-900">Weather-based dynamic themes</h2>
+                    <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${weatherThemeEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                      {weatherThemeLoading ? 'Loading' : weatherThemeEnabled ? 'Live' : 'Off'}
+                    </span>
+                  </div>
+                  <p className="mt-1 max-w-3xl text-sm leading-5 text-slate-500">
+                    Automatically applies Summer, Rainy, Winter, Autumn or Snow atmosphere across TapInX from live local weather. Turning it off restores the standard Day/Night theme.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={weatherThemeEnabled}
+                aria-label="Enable weather-based dynamic themes globally"
+                disabled={weatherThemeLoading || weatherThemeSaving}
+                onClick={toggleWeatherThemes}
+                className={`group inline-flex min-w-32 shrink-0 items-center justify-between gap-3 rounded-full border px-3 py-2 text-sm font-bold transition-all duration-300 disabled:cursor-wait disabled:opacity-60 ${weatherThemeEnabled ? 'border-emerald-300 bg-emerald-50 text-emerald-700 shadow-sm shadow-emerald-100' : 'border-slate-200 bg-white text-slate-500'}`}
+              >
+                <span>{weatherThemeSaving ? 'Saving…' : weatherThemeEnabled ? 'Enabled' : 'Disabled'}</span>
+                <span className={`relative h-6 w-11 rounded-full transition-colors duration-300 ${weatherThemeEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`} aria-hidden="true">
+                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-300 ${weatherThemeEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                </span>
+              </button>
+            </div>
+          </section>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
             <StatCard label="Total Vendors" value={stats.total_vendors} icon={<Shield className="text-blue-600" size={24} />} />
             <StatCard label="Active Vendors" value={stats.active_vendors} icon={<Check className="text-green-600" size={24} />} />
