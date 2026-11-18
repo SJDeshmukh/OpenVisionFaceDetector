@@ -1032,12 +1032,16 @@ def get_vendors():
     has_kiosk_username_col = "kiosk_username" in vendor_cols
     has_is_kiosk_col = "is_kiosk" in sys_user_cols
 
-    kiosk_filter = "(is_kiosk = 1 OR person_id IS NULL)" if has_is_kiosk_col else "(person_id IS NULL)"
-    kiosk_order = "CASE WHEN is_kiosk = 1 THEN 0 WHEN person_id IS NULL THEN 1 ELSE 2 END, " if has_is_kiosk_col else ""
+    kiosk_filter = "(person_id IS NULL AND is_kiosk = 1)" if has_is_kiosk_col else "(person_id IS NULL)"
+    kiosk_order = ""
 
     if has_kiosk_username_col:
         user_user_select = f"""COALESCE(
-            NULLIF(v.kiosk_username, ''),
+            (SELECT username FROM system_users
+             WHERE vendor_id = v.id
+               AND LOWER(username) = LOWER(v.kiosk_username)
+               AND role = 'user' AND {kiosk_filter}
+             LIMIT 1),
             (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' AND {kiosk_filter} ORDER BY {kiosk_order}username ASC LIMIT 1)
         ) as user_username"""
     else:
@@ -2537,12 +2541,18 @@ def update_vendor_details(vendor_id):
         # 2. Look up the designated kiosk user in system_users
         kiosk_user = None
         if existing_kiosk_username:
-            c.execute("SELECT username FROM system_users WHERE vendor_id = ? AND username = ?", (vendor_id, existing_kiosk_username))
+            exact_kiosk_filter = "AND is_kiosk = 1" if has_is_kiosk_col else ""
+            c.execute(
+                f"""SELECT username FROM system_users
+                    WHERE vendor_id = ? AND LOWER(username) = LOWER(?)
+                      AND role = 'user' AND person_id IS NULL {exact_kiosk_filter}""",
+                (vendor_id, existing_kiosk_username),
+            )
             kiosk_user = c.fetchone()
 
         if not kiosk_user:
-            kiosk_filter = "(is_kiosk = 1 OR person_id IS NULL)" if has_is_kiosk_col else "(person_id IS NULL)"
-            kiosk_order = "ORDER BY CASE WHEN is_kiosk = 1 THEN 0 WHEN person_id IS NULL THEN 1 ELSE 2 END, username ASC" if has_is_kiosk_col else "ORDER BY username ASC"
+            kiosk_filter = "(person_id IS NULL AND is_kiosk = 1)" if has_is_kiosk_col else "(person_id IS NULL)"
+            kiosk_order = "ORDER BY username ASC"
             c.execute(f"SELECT username FROM system_users WHERE vendor_id = ? AND role = 'user' AND {kiosk_filter} {kiosk_order} LIMIT 1", (vendor_id,))
             kiosk_user = c.fetchone()
 

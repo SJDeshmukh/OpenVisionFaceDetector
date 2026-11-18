@@ -64,6 +64,79 @@ def is_designated_kiosk_account(user, kiosk_username=None):
     return bool(user.get("is_kiosk"))
 
 
+def kiosk_vendor_id_for_username(conn, username):
+    """Return the vendor that explicitly reserved ``username`` for its kiosk.
+
+    Kiosk usernames are account-purpose identifiers.  Looking them up before
+    person auto-provisioning prevents a matching student email from being
+    mistaken for a normal web account.
+    """
+    username = normalize_login_email(username)
+    if not username:
+        return None
+
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id FROM vendors "
+        "WHERE LOWER(TRIM(kiosk_username)) = LOWER(TRIM(?)) LIMIT 1",
+        (username,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    if hasattr(row, "keys"):
+        return row["id"]
+    return row[0]
+
+
+def repair_kiosk_login_assignments(conn):
+    """Remove or replace kiosk pointers that reference person-linked users."""
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, kiosk_username FROM vendors "
+        "WHERE kiosk_username IS NOT NULL AND TRIM(kiosk_username) <> ''"
+    )
+    vendors = cursor.fetchall() or []
+    repaired = 0
+
+    for row in vendors:
+        if hasattr(row, "keys"):
+            vendor_id = row["id"]
+            kiosk_username = row["kiosk_username"]
+        else:
+            vendor_id, kiosk_username = row[0], row[1]
+
+        cursor.execute(
+            "SELECT username FROM system_users "
+            "WHERE vendor_id = ? AND LOWER(username) = LOWER(?) "
+            "AND role = 'user' AND (person_id IS NULL OR person_id = 0) LIMIT 1",
+            (vendor_id, kiosk_username),
+        )
+        if cursor.fetchone():
+            continue
+
+        cursor.execute(
+            "SELECT username FROM system_users "
+            "WHERE vendor_id = ? AND role = 'user' "
+            "AND (person_id IS NULL OR person_id = 0) "
+            "ORDER BY username ASC LIMIT 1",
+            (vendor_id,),
+        )
+        replacement = cursor.fetchone()
+        replacement_username = None
+        if replacement:
+            replacement_username = (
+                replacement["username"] if hasattr(replacement, "keys") else replacement[0]
+            )
+        cursor.execute(
+            "UPDATE vendors SET kiosk_username = ? WHERE id = ?",
+            (replacement_username, vendor_id),
+        )
+        repaired += 1
+
+    return repaired
+
+
 def _table_exists(conn, table_name):
     cursor = conn.cursor()
     if getattr(conn, "_is_pg", False):
@@ -187,11 +260,13 @@ def migrate_legacy_login_identities(conn):
         if hasattr(row, "keys"):
             username = str(row["username"] or "")
             role = str(row["role"] or "")
+            person_id = row["person_id"]
             vendor_id = row["vendor_id"]
             custom_data = row["custom_data"]
         else:
             username = str(row[0] or "")
             role = str(row[1] or "")
+            person_id = row[2]
             vendor_id = row[3]
             custom_data = row[4]
 
@@ -226,10 +301,16 @@ def migrate_legacy_login_identities(conn):
         if cursor.rowcount != 1:
             continue
         cursor.execute("DELETE FROM active_sessions WHERE username = ?", (username,))
-        cursor.execute(
-            "UPDATE vendors SET kiosk_username = ? WHERE id = ? AND kiosk_username = ?",
-            (target_email, vendor_id, username),
-        )
+        # A person-linked login can never be the vendor's kiosk identity.  Old
+        # data sometimes pointed kiosk_username at an employee/student ID; do
+        # not carry that invalid assignment over to the person's email.
+        if person_id not in (None, "", 0, "0"):
+            cursor.execute(
+                "UPDATE vendors SET kiosk_username = NULL "
+                "WHERE id = ? AND LOWER(kiosk_username) = LOWER(?)",
+                (vendor_id, username),
+            )
         migrated += 1
 
+    repair_kiosk_login_assignments(conn)
     return migrated

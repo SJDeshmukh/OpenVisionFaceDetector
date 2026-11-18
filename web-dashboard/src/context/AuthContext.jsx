@@ -354,7 +354,7 @@ export const AuthProvider = ({ children }) => {
     };
   }, [Boolean(user), staffSession?.access_token]);
 
-  const login = async (username, password, secondary_password = null) => {
+  const login = async (username, password) => {
     try {
       let deviceId = localStorage.getItem('web_device_id');
       if (!deviceId) {
@@ -362,13 +362,16 @@ export const AuthProvider = ({ children }) => {
         localStorage.setItem('web_device_id', deviceId);
       }
       const response = await axios.post(`${API_URL}/auth/login`, {
-        username, password, secondary_password, device_id: deviceId, platform: 'web',
+        username, password, device_id: deviceId, platform: 'web',
       });
       if (response.data.status !== 'success') {
         return { success: false, error: response.data.error || 'Unexpected response from server' };
       }
       if (response.data.needs_student_password) {
-        return { success: true, status: 'success', needs_student_password: true, username: response.data.username };
+        return {
+          success: false,
+          error: 'Email and password web login is available to administrators only.',
+        };
       }
       const userData = withoutToken({
         id: response.data.username, username: response.data.username, role: response.data.role,

@@ -5,7 +5,11 @@ import string
 from flask import Blueprint, request, jsonify, make_response, g
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token, is_valid_login_email, normalize_login_email, WEB_TOKEN_TTL
-from services.login_identity_service import is_designated_kiosk_account, is_student_profile
+from services.login_identity_service import (
+    is_designated_kiosk_account,
+    is_student_profile,
+    kiosk_vendor_id_for_username,
+)
 from services.login_policy_service import can_use_password_login
 from middleware.handlers import rate_limit, get_client_ip
 import json
@@ -385,6 +389,27 @@ def login():
             user = c.fetchone()
         except Exception:
             pass
+
+    # Kiosk credentials have one purpose: opening the attendance kiosk app.
+    # Resolve that purpose before profile auto-provisioning so a matching face
+    # email can never turn a kiosk login into a student web session.
+    kiosk_vendor_id = None
+    try:
+        if "kiosk_username" in get_table_columns(conn, "vendors"):
+            kiosk_vendor_id = kiosk_vendor_id_for_username(conn, login_identity)
+    except Exception as exc:
+        logger.warning("Unable to resolve kiosk login purpose: %s", exc)
+
+    if platform.lower() == "web" and kiosk_vendor_id is not None:
+        conn.close()
+        return jsonify({
+            "error": (
+                "Kiosk credentials can only be used in the TapInX attendance app. "
+                "Use the Admin Login email for the web dashboard."
+            ),
+            "code": "KIOSK_WEB_LOGIN_FORBIDDEN",
+        }), 403
+
     def normalize_phone(p):
         if not p: return ""
         p = str(p).strip().replace("+91", "").replace(" ", "").replace("-", "")
@@ -392,7 +417,7 @@ def login():
         return p
 
     # Handle employee/student login auto-creation by registered email only.
-    if not user and is_valid_login_email(username):
+    if not user and kiosk_vendor_id is None and is_valid_login_email(username):
         try:
             is_pg = getattr(conn, "_is_pg", False)
             if is_pg:

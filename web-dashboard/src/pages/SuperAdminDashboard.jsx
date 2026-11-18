@@ -4629,7 +4629,7 @@ const SuperAdminDashboard = () => {
                     </div>
                   </div>
                   <div className="border p-3 rounded-lg bg-slate-50">
-                    <div className="text-xs font-bold text-slate-500 mb-2 uppercase">Kiosk Login</div>
+                    <div className="text-xs font-bold text-slate-500 mb-2 uppercase">Attendance Kiosk App Login</div>
                     <div className="space-y-2">
                       <input
                         type="email"
@@ -4659,6 +4659,9 @@ const SuperAdminDashboard = () => {
                         />
                         <p className="text-[10px] text-slate-400 mt-0.5 italic">PIN required on tablet to exit Kiosk Lockdown Mode.</p>
                       </div>
+                      <p className="text-[10px] text-slate-500 leading-relaxed">
+                        These credentials work only in the TapInX attendance kiosk app. Use Admin Login for the web dashboard.
+                      </p>
                     </div>
                   </div>
                 </div>

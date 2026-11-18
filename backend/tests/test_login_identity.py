@@ -12,6 +12,7 @@ from services.login_identity_service import (
     is_designated_kiosk_account,
     is_valid_login_email,
     is_student_profile,
+    kiosk_vendor_id_for_username,
     login_email_from_profile,
     migrate_legacy_login_identities,
     normalize_login_email,
@@ -79,11 +80,51 @@ def test_legacy_employee_id_login_is_migrated_to_profile_email():
     ).fetchone()[0] == "employee@example.com"
     assert conn.execute(
         "SELECT kiosk_username FROM vendors WHERE id = 1"
-    ).fetchone()[0] == "employee@example.com"
+    ).fetchone()[0] is None
     assert conn.execute("SELECT COUNT(*) FROM active_sessions").fetchone()[0] == 0
     assert conn.execute(
         "SELECT username FROM system_users WHERE role = 'super_admin'"
     ).fetchone()[0] == "superadmin"
+    conn.close()
+
+
+def test_kiosk_username_is_reserved_before_person_auto_provisioning():
+    conn = sqlite3.connect(":memory:")
+    conn.executescript("""
+        CREATE TABLE vendors (id INTEGER PRIMARY KEY, kiosk_username TEXT);
+        INSERT INTO vendors VALUES (8, ' Kiosk@Example.com ');
+    """)
+
+    assert kiosk_vendor_id_for_username(conn, "kiosk@example.com") == 8
+    assert kiosk_vendor_id_for_username(conn, "student@example.com") is None
+    conn.execute("INSERT INTO vendors VALUES (9, 'legacy-kiosk')")
+    assert kiosk_vendor_id_for_username(conn, "LEGACY-KIOSK") == 9
+    conn.close()
+
+
+def test_invalid_student_kiosk_pointer_is_cleared():
+    conn = sqlite3.connect(":memory:")
+    conn.executescript("""
+        CREATE TABLE vendors (id INTEGER PRIMARY KEY, kiosk_username TEXT);
+        CREATE TABLE faces (
+            id INTEGER PRIMARY KEY, vendor_id INTEGER, custom_data TEXT
+        );
+        CREATE TABLE system_users (
+            username TEXT PRIMARY KEY, role TEXT, vendor_id INTEGER, person_id INTEGER
+        );
+        CREATE TABLE active_sessions (token TEXT, username TEXT);
+
+        INSERT INTO vendors VALUES (5, 'student@example.com');
+        INSERT INTO faces VALUES (
+            51, 5, '{"email":"student@example.com","person_type":"student"}'
+        );
+        INSERT INTO system_users VALUES ('student@example.com', 'student', 5, 51);
+    """)
+
+    assert migrate_legacy_login_identities(conn) == 0
+    assert conn.execute(
+        "SELECT kiosk_username FROM vendors WHERE id = 5"
+    ).fetchone()[0] is None
     conn.close()
 
 

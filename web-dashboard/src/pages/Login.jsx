@@ -90,12 +90,9 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [pinLoading, setPinLoading] = useState(false);
-  const [studentPasswordLoading, setStudentPasswordLoading] = useState(false);
   const [showPasswordChange, setShowPasswordChange] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showStudentPasswordModal, setShowStudentPasswordModal] = useState(false);
-  const [studentPassword, setStudentPassword] = useState('');
   const [changing, setChanging] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
@@ -162,10 +159,6 @@ const Login = () => {
         }
         if (result.force_password_change) {
           setShowPasswordChange(true);
-          return;
-        }
-        if (result.status === 'success' && result.needs_student_password) {
-          setShowStudentPasswordModal(true);
           return;
         }
         let storedUser = {};
@@ -267,27 +260,6 @@ const Login = () => {
       });
     } finally {
       setResetting(false);
-    }
-  };
-
-  const handleStudentPasswordSubmit = async (e) => {
-    e.preventDefault();
-    if (authActionInFlightRef.current) return;
-    authActionInFlightRef.current = true;
-    setError('');
-    setStudentPasswordLoading(true);
-    try {
-      const result = await login(username, password, studentPassword);
-      if (result.success) {
-        setShowStudentPasswordModal(false);
-        setStudentPassword('');
-        await openAuthenticatedView('/leave-management');
-      } else {
-        setError(result.error || 'Invalid custom password');
-      }
-    } finally {
-      authActionInFlightRef.current = false;
-      setStudentPasswordLoading(false);
     }
   };
 
@@ -725,72 +697,6 @@ const Login = () => {
         )}
       </AnimatePresence>
 
-      {/* ── Student Password Modal ── */}
-      <AnimatePresence>
-        {showStudentPasswordModal && (
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            style={{ background: 'rgba(5,6,7,0.88)', backdropFilter: 'blur(8px)' }}
-          >
-            <motion.div
-              initial={{ scale: 0.93, y: 16 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.93, y: 16 }}
-              transition={{ type: 'spring', stiffness: 280, damping: 28 }}
-              className="w-full max-w-sm rounded-2xl overflow-hidden"
-              style={{
-                background: 'rgba(17,19,21,0.98)',
-                border: '1px solid rgba(255,255,255,0.11)',
-                boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
-              }}
-            >
-              <div className="px-7 pt-7 pb-5" style={{ background: 'rgba(255,255,255,0.025)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-                <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                  <Lock size={18} style={{ color: '#9B6AFF' }} /> Identity Verification
-                </h2>
-                <p className="text-xs mt-1.5" style={{ color: '#888C92' }}>
-                  Enter your custom password to continue.
-                </p>
-              </div>
-              <form onSubmit={handleStudentPasswordSubmit} className="px-7 py-6 space-y-4">
-                {error && (
-                  <div className="text-xs p-3 rounded-xl" style={{ background: 'rgba(255,59,59,0.1)', border: '1px solid rgba(255,59,59,0.22)', color: '#FF7070' }}>
-                    {error}
-                  </div>
-                )}
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-semibold uppercase tracking-[0.12em]" style={{ color: '#9B9EA3' }}>Custom Password</label>
-                  <input
-                    type="password" required autoFocus
-                    value={studentPassword} onChange={e => setStudentPassword(e.target.value)}
-                    className="w-full px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 input-glow"
-                    style={{ background: '#16181B', border: '1px solid rgba(255,255,255,0.11)', color: '#fff', outline: 'none' }}
-                    placeholder="Enter your set password"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  disabled={studentPasswordLoading || isAuthTransitioning}
-                  data-auth-state={studentPasswordLoading ? 'authenticating' : 'idle'}
-                  className="auth-login-trigger btn-primary w-full py-3.5 rounded-xl text-sm font-semibold disabled:opacity-60"
-                >
-                  {studentPasswordLoading ? 'Verifying…' : 'Verify & Login'}
-                </button>
-                <button
-                  type="button"
-                  disabled={studentPasswordLoading || isAuthTransitioning}
-                  onClick={() => setShowStudentPasswordModal(false)}
-                  className="w-full py-2.5 text-sm font-medium transition-colors duration-200"
-                  style={{ color: '#888C92' }}
-                  onMouseEnter={e => e.currentTarget.style.color = '#C4C4E0'}
-                  onMouseLeave={e => e.currentTarget.style.color = '#888C92'}
-                >
-                  Cancel
-                </button>
-              </form>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 };
