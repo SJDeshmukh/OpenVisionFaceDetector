@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import date, time
 
 from flask import Flask, g
 
@@ -106,8 +107,8 @@ def _create_db(db_path):
     )
     conn.execute(
         """INSERT INTO leave_requests
-           (id, vendor_id, student_id, leave_type, reason, start_date, end_date)
-           VALUES (100, 1, 10, 'home', 'Family', '2026-09-12', '2026-09-13')"""
+           (id, vendor_id, student_id, leave_type, reason, start_date, end_date, start_time, end_time)
+           VALUES (100, 1, 10, 'home', 'Family', '2026-09-12', '2026-09-13', '09:15:00', '18:45:00')"""
     )
     conn.commit()
     conn.close()
@@ -116,6 +117,22 @@ def _create_db(db_path):
 def _json(result):
     response = result[0] if isinstance(result, tuple) else result
     return response.get_json()
+
+
+def test_parent_leave_payload_uses_iso_dates_and_submitted_times():
+    payload = leave_routes._parent_leave_payload({
+        "id": 100,
+        "start_date": date(2026, 9, 12),
+        "end_date": date(2026, 9, 13),
+        "start_time": time(9, 15, 30),
+        "end_time": "18:45:00",
+    })
+    assert payload["start_date"] == "2026-09-12"
+    assert payload["end_date"] == "2026-09-13"
+    assert payload["start_time"] == "09:15"
+    assert payload["end_time"] == "18:45"
+    assert payload["reporting_time"] == "09:15"
+    assert payload["expected_return_time"] == "18:45"
 
 
 def test_student_rector_hod_parent_is_the_only_valid_order(tmp_path, monkeypatch):
@@ -191,7 +208,10 @@ def test_student_rector_hod_parent_is_the_only_valid_order(tmp_path, monkeypatch
 
     principal.update(role="parent", username="parent_1_STU-1")
     with app.test_request_context("/parent/pending?student_number=STU-1"):
-        assert [r["id"] for r in _json(leave_routes.get_parent_pending_requests())["requests"]] == [100]
+        parent_requests = _json(leave_routes.get_parent_pending_requests())["requests"]
+        assert [r["id"] for r in parent_requests] == [100]
+        assert parent_requests[0]["start_time"] == "09:15"
+        assert parent_requests[0]["end_time"] == "18:45"
     with app.test_request_context(
         "/parent/approve",
         method="POST",

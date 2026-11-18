@@ -30,12 +30,13 @@ class ParentLeaveAdapter(
         
         val startDate = leave.get("start_date")?.asString ?: ""
         val endDate = leave.get("end_date")?.asString ?: ""
-        
-        if (startDate == endDate || endDate.isEmpty()) {
-            holder.tvLeaveDate.text = "Date: $startDate"
-        } else {
-            holder.tvLeaveDate.text = "Date: $startDate to $endDate"
-        }
+        val startTime = leave.get("start_time")?.asString
+            ?: leave.get("reporting_time")?.asString
+            ?: ""
+        val endTime = leave.get("end_time")?.asString
+            ?: leave.get("expected_return_time")?.asString
+            ?: ""
+        holder.tvLeaveDate.text = LeaveDateTimeFormatter.range(startDate, startTime, endDate, endTime)
 
         val status = leave.get("parent_status")?.asString ?: "Pending"
         holder.tvLeaveStatus.text = status.capitalize()

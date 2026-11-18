@@ -58,8 +58,16 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
                 
                 tvStudentName.text = "Resident ID: $studentNumber"
                 tvReason.text = json.optString("reason", "No Reason Provided")
-                tvStartDate.text = json.optString("start_date", "-")
-                tvEndDate.text = json.optString("end_date", "-")
+                val startTime = json.optString("start_time", json.optString("reporting_time", ""))
+                val endTime = json.optString("end_time", json.optString("expected_return_time", ""))
+                tvStartDate.text = LeaveDateTimeFormatter.point(
+                    json.optString("start_date", ""),
+                    startTime
+                )
+                tvEndDate.text = LeaveDateTimeFormatter.point(
+                    json.optString("end_date", ""),
+                    endTime
+                )
             } catch (e: Exception) {
                 e.printStackTrace()
             }

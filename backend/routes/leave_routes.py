@@ -4,7 +4,7 @@ import re
 import json
 import base64
 import numpy as np
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from services.auth_service import authenticate_vendor_access, generate_token_with_claims, hash_password, verify_token, require_auth, login_email_from_profile
 from services.face_service import _normalize_vec, _decode_data_uri_to_rgb
 from services.mobile_face_template import decode_face_template as _decode_face_template
@@ -26,6 +26,47 @@ from utils import get_db_connection, log_audit, require_feature
 leave_bp = Blueprint('leave_bp', __name__)
 
 ALLOWED_LEAVE_ACTIONS = {"approved", "rejected"}
+
+
+def _leave_date_value(value):
+    """Serialize database date values without an artificial midnight timestamp."""
+    if value in (None, ""):
+        return ""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    raw = str(value).strip()
+    iso_match = re.match(r"^(\d{4}-\d{2}-\d{2})", raw)
+    return iso_match.group(1) if iso_match else raw
+
+
+def _leave_time_value(value, default=""):
+    """Return a strict HH:MM value suitable for web and Android clients."""
+    if value in (None, ""):
+        value = default
+    if isinstance(value, datetime):
+        value = value.time()
+    if isinstance(value, datetime_time):
+        return value.strftime("%H:%M")
+    raw = str(value or "").strip()
+    match = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d(?:\.\d+)?)?", raw)
+    if not match:
+        raise ValueError("Leave time must use 24-hour HH:MM format")
+    return f"{match.group(1)}:{match.group(2)}"
+
+
+def _parent_leave_payload(row):
+    """Normalize a leave row for stable parent web/mobile API contracts."""
+    item = dict(row)
+    item["start_date"] = _leave_date_value(item.get("start_date"))
+    item["end_date"] = _leave_date_value(item.get("end_date"))
+    item["start_time"] = _leave_time_value(item.get("start_time"), "10:00")
+    item["end_time"] = _leave_time_value(item.get("end_time"), "18:00")
+    # Descriptive aliases let newer mobile builds avoid guessing what start/end mean.
+    item["reporting_time"] = item["start_time"]
+    item["expected_return_time"] = item["end_time"]
+    return item
 
 def get_row_dict(row):
     if row is None: return None
@@ -220,16 +261,53 @@ def _notify_parent_when_current(conn, vendor_id, request_row):
     if not stage or stage.get("actor_type") != "parent":
         return
     try:
+        details = dict(request_row)
+        required = {"start_date", "end_date", "start_time", "end_time", "leave_type"}
+        if not required.issubset(details):
+            c = conn.cursor()
+            is_pg = getattr(conn, "_is_pg", False)
+            if is_pg:
+                c.execute(
+                    """SELECT lr.start_date, lr.end_date, lr.start_time, lr.end_time, lr.leave_type,
+                              COALESCE(f.name, 'Your student') AS student_name
+                       FROM leave_requests lr LEFT JOIN faces f ON f.id = lr.student_id
+                       WHERE lr.id = %s AND lr.vendor_id = %s""",
+                    (request_row["id"], vendor_id),
+                )
+            else:
+                c.execute(
+                    """SELECT lr.start_date, lr.end_date, lr.start_time, lr.end_time, lr.leave_type,
+                              COALESCE(f.name, 'Your student') AS student_name
+                       FROM leave_requests lr LEFT JOIN faces f ON f.id = lr.student_id
+                       WHERE lr.id = ? AND lr.vendor_id = ?""",
+                    (request_row["id"], vendor_id),
+                )
+            fetched = c.fetchone()
+            if fetched:
+                details.update(get_row_dict(fetched))
+
+        start_date = _leave_date_value(details.get("start_date"))
+        end_date = _leave_date_value(details.get("end_date"))
+        start_time = _leave_time_value(details.get("start_time"), "10:00")
+        end_time = _leave_time_value(details.get("end_time"), "18:00")
+        student_name = details.get("student_name") or "Your student"
+        leave_type = str(details.get("leave_type") or "Leave").replace("_", " ").title()
         from notifications import notify_parent_async
         notify_parent_async(
             request_row["student_id"],
             vendor_id,
             "Leave request awaiting your approval",
-            f"A leave request is ready for {stage.get('display_name') or 'Parent'} review.",
+            f"{student_name}: {leave_type} from {start_date} at {start_time} to {end_date} at {end_time}.",
             {
                 "type": "leave_approval",
                 "request_id": str(request_row["id"]),
                 "stage": str(stage.get("stage_key") or "parent"),
+                "start_date": start_date,
+                "end_date": end_date,
+                "start_time": start_time,
+                "end_time": end_time,
+                "reporting_time": start_time,
+                "expected_return_time": end_time,
             },
         )
     except Exception:
@@ -685,14 +763,17 @@ def create_leave_request():
     role_error = _require_role("user", "student", "parent")
     if role_error: return role_error
     
-    data = request.json
+    data = request.get_json(silent=True) or {}
     student_id = data.get("student_id")
     leave_type = data.get("leave_type")
     reason = data.get("reason")
     start_date = data.get("start_date")
     end_date = data.get("end_date")
-    start_time = data.get("start_time", "10:00")
-    end_time = data.get("end_time", "18:00")
+    try:
+        start_time = _leave_time_value(data.get("start_time"), "10:00")
+        end_time = _leave_time_value(data.get("end_time"), "18:00")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     
     if not all([student_id, leave_type, reason, start_date, end_date]):
         return jsonify({"error": "Missing required fields"}), 400
@@ -948,8 +1029,11 @@ def update_leave_request(request_id):
     new_reason = data.get("reason")
     new_start_date = data.get("start_date")
     new_end_date = data.get("end_date")
-    new_start_time = data.get("start_time", "10:00")
-    new_end_time = data.get("end_time", "18:00")
+    try:
+        new_start_time = _leave_time_value(data.get("start_time"), "10:00")
+        new_end_time = _leave_time_value(data.get("end_time"), "18:00")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     if not all([new_leave_type, new_reason, new_start_date, new_end_date]):
         return jsonify({"error": "Missing required fields"}), 400
@@ -1149,14 +1233,17 @@ def get_parent_pending_requests():
         include_all = request.args.get("all") in ("1", "true") or request.path.endswith(("/requests", "/history"))
 
         def _format_for_parent(item_list):
-            for r in item_list:
+            normalized = []
+            for source in item_list:
+                r = _parent_leave_payload(source)
                 if int(r.get("is_cancellation") or 0) == 1:
                     orig_type = str(r.get("leave_type") or "Leave").replace("_", " ").title()
                     c_reason = r.get("cancellation_reason") or "Cancellation requested by student"
                     orig_reason = r.get("reason") or "No reason provided"
                     r["leave_type"] = f"Cancellation: {orig_type}"
                     r["reason"] = f"[CANCELLATION REQUEST] {c_reason} (Original: {orig_reason})"
-            return item_list
+                normalized.append(r)
+            return normalized
 
         if include_all or status_param:
             if status_param and status_param != "all":

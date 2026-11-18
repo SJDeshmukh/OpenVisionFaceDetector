@@ -78,13 +78,13 @@ def _send_fcm_v1(fcm_token: str, title: str, body: str, data: dict = None) -> bo
         )
         # Send as combined message: system auto-shows when app is closed,
         # onMessageReceived fires when app is foreground.
+        notification_data = {str(k): str(v) for k, v in (data or {}).items()}
+        notification_data.setdefault("type", "attendance")
+        notification_data["channel_id"] = "parent_attendance_alert"
         msg = messaging.Message(
             notification=messaging.Notification(title=title, body=body),
             android=android_config,
-            data={str(k): str(v) for k, v in (data or {}).items()} | {
-                "type": "attendance",
-                "channel_id": "parent_attendance_alert",
-            },
+            data=notification_data,
             token=fcm_token,
         )
         response = messaging.send(msg)
