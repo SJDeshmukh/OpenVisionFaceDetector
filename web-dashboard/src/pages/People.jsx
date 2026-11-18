@@ -115,7 +115,7 @@ const personImageSource = (person) => {
   return `data:image/jpeg;base64,${person.face_image}`;
 };
 
-const PersonAvatar = ({ person }) => {
+const PersonAvatar = ({ person, large = false }) => {
   const source = personImageSource(person);
   const [failedAttempts, setFailedAttempts] = useState(0);
   useEffect(() => setFailedAttempts(0), [source]);
@@ -126,7 +126,7 @@ const PersonAvatar = ({ person }) => {
 
   if (!source || failedAttempts > 1) {
     return (
-      <div className="h-10 w-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 font-bold text-sm mr-3 border border-slate-200">
+      <div className={`${large ? 'h-16 w-16 rounded-2xl text-xl' : 'h-10 w-10 rounded-xl text-sm mr-3'} shrink-0 bg-slate-100 flex items-center justify-center text-slate-400 font-bold border border-slate-200`}>
         {person.name?.charAt(0)}
       </div>
     );
@@ -139,7 +139,7 @@ const PersonAvatar = ({ person }) => {
       loading="lazy"
       decoding="async"
       onError={() => setFailedAttempts((attempts) => attempts + 1)}
-      className="h-10 w-10 rounded-xl object-cover mr-3 border border-slate-200 shadow-sm"
+      className={`${large ? 'h-16 w-16 rounded-2xl' : 'h-10 w-10 rounded-xl mr-3'} shrink-0 object-cover border border-slate-200 shadow-sm`}
     />
   );
 };
@@ -3957,7 +3957,7 @@ const People = () => {
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden max-h-[90vh] flex flex-col animate-in fade-in zoom-in-95 duration-150">
             <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
               <div className="flex items-center gap-4">
-                <PersonAvatar person={profileData || profileTarget} />
+                <PersonAvatar person={profileData || profileTarget} large />
                 <div>
                   <div className="flex items-center gap-2.5">
                     <h2 className="text-xl font-bold text-slate-800">{(profileData || profileTarget)?.name}</h2>
@@ -3989,7 +3989,7 @@ const People = () => {
                           ? 'bg-blue-50 text-blue-700 border border-blue-200'
                           : 'bg-slate-200 text-slate-600'
                       }`}>
-                        Login: {profileData.login_enabled ? 'Enabled' : 'Disabled'}
+                        Account: {profileData.login_enabled ? 'Enabled' : 'Disabled'}
                       </span>
                       {profileData.hostel_status && profileData.hostel_status !== 'not_applicable' && (
                         <span className={`text-xs px-2.5 py-0.5 rounded-full font-semibold ${

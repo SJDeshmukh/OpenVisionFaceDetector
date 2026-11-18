@@ -3121,6 +3121,9 @@ def get_person_profile(person_id):
         person["exit_reason"] = person.get("exit_reason") or ""
         person["status_updated_at"] = str(person["status_updated_at"]) if person.get("status_updated_at") else None
         person["status_updated_by"] = person.get("status_updated_by") or ""
+        if bool(person.get("has_face_image")):
+            image_versions = load_person_image_versions(conn, c, vendor_id, [person_id])
+            person["image_url"] = _person_image_url(person_id, image_versions.get(person_id))
 
         # Linked parents
         parents = []

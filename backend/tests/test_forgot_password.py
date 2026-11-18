@@ -24,7 +24,7 @@ def _undecorated(handler):
     return handler
 
 
-def test_forgot_password_emails_hashed_temporary_password_and_forces_change(tmp_path, monkeypatch):
+def test_admin_forgot_password_emails_hashed_temporary_password_and_forces_change(tmp_path, monkeypatch):
     db_path = tmp_path / "password-reset.db"
     conn = sqlite3.connect(db_path)
     conn.executescript(
@@ -40,12 +40,11 @@ def test_forgot_password_emails_hashed_temporary_password_and_forces_change(tmp_
         """
     )
     conn.execute("INSERT INTO vendors VALUES (1, 'office@example.com')")
-    conn.execute("INSERT INTO faces VALUES (10, 1, '{\"student_email\":\"student@example.com\"}')")
     conn.execute(
-        "INSERT INTO system_users VALUES (?, ?, NULL, 'user', 1, 10, 1, 0)",
-        ("STUDENT-1", auth.hash_password("old-password")),
+        "INSERT INTO system_users VALUES (?, ?, NULL, 'vendor_admin', 1, NULL, 1, 0)",
+        ("student@example.com", auth.hash_password("old-password")),
     )
-    conn.execute("INSERT INTO active_sessions VALUES ('old-token', 'STUDENT-1')")
+    conn.execute("INSERT INTO active_sessions VALUES ('old-token', 'student@example.com')")
     conn.commit()
     conn.close()
 
@@ -76,7 +75,7 @@ def test_forgot_password_emails_hashed_temporary_password_and_forces_change(tmp_
     username, password_hash, password_plain, has_set, force_change = conn.execute(
         "SELECT username, password, password_plain, has_set_password, force_password_change FROM system_users WHERE username = 'student@example.com'"
     ).fetchone()
-    sessions = conn.execute("SELECT COUNT(*) FROM active_sessions WHERE username = 'STUDENT-1'").fetchone()[0]
+    sessions = conn.execute("SELECT COUNT(*) FROM active_sessions WHERE username = 'student@example.com'").fetchone()[0]
     conn.close()
     assert username == "student@example.com"
     assert verify_password(temporary_password, password_hash)
@@ -100,7 +99,7 @@ def test_forgot_password_does_not_change_password_when_delivery_fails(tmp_path, 
         """
     )
     original_hash = auth.hash_password("old-password")
-    conn.execute("INSERT INTO system_users VALUES ('person@example.com', ?, NULL, 'faculty', 1, NULL, 1, 0)", (original_hash,))
+    conn.execute("INSERT INTO system_users VALUES ('person@example.com', ?, NULL, 'vendor_admin', 1, NULL, 1, 0)", (original_hash,))
     conn.commit()
     conn.close()
 
@@ -127,6 +126,55 @@ def test_forgot_password_does_not_change_password_when_delivery_fails(tmp_path, 
     conn.close()
     assert password_hash == original_hash
     assert force_change == 0
+
+
+def test_student_password_reset_is_not_available_for_web_login(tmp_path, monkeypatch):
+    db_path = tmp_path / "student-password-reset-disabled.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE vendors (id INTEGER PRIMARY KEY, email TEXT);
+        CREATE TABLE faces (id INTEGER PRIMARY KEY, vendor_id INTEGER, custom_data TEXT);
+        CREATE TABLE system_users (
+            username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT,
+            vendor_id INTEGER, person_id INTEGER, has_set_password INTEGER,
+            force_password_change INTEGER
+        );
+        CREATE TABLE active_sessions (token TEXT, username TEXT);
+        """
+    )
+    original_hash = auth.hash_password("old-password")
+    conn.execute(
+        "INSERT INTO system_users VALUES ('student@example.com', ?, NULL, 'student', 1, 10, 1, 0)",
+        (original_hash,),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "app",
+        SimpleNamespace(get_db_connection=_connection_factory(db_path)),
+    )
+    delivered = []
+    monkeypatch.setattr(email_service, "send_email", lambda *args, **kwargs: delivered.append(args))
+    app = Flask(__name__)
+    with app.test_request_context(
+        "/auth/forgot-password",
+        method="POST",
+        json={"email": "student@example.com"},
+    ):
+        response, status = _undecorated(auth.forgot_password)()
+
+    assert status == 404
+    assert "No web-login account" in response.get_json()["error"]
+    assert delivered == []
+    conn = sqlite3.connect(db_path)
+    stored_hash = conn.execute(
+        "SELECT password FROM system_users WHERE username = 'student@example.com'"
+    ).fetchone()[0]
+    conn.close()
+    assert stored_hash == original_hash
 
 
 def test_first_login_student_can_set_password_without_current_password(tmp_path, monkeypatch):

@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify, make_response, g
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token, is_valid_login_email, normalize_login_email, WEB_TOKEN_TTL
 from services.login_identity_service import is_designated_kiosk_account, is_student_profile
+from services.login_policy_service import can_use_password_login
 from middleware.handlers import rate_limit, get_client_ip
 import json
 import base64
@@ -40,7 +41,7 @@ def _temporary_password(length=5):
 @rate_limit(limit=3, window=900)
 @error_logger
 def forgot_password():
-    """Email a five-character temporary password to a registered web user."""
+    """Email a five-character temporary password to a registered web administrator."""
     from app import get_db_connection
     from services.email_service import send_email
 
@@ -55,44 +56,15 @@ def forgot_password():
         is_pg = getattr(conn, "_is_pg", False)
         placeholder = "%s" if is_pg else "?"
 
-        # Most faculty/admin accounts use the email directly as their username.
+        # Password-based web access is restricted to administrative accounts.
         c.execute(
             f"""SELECT username, role, vendor_id FROM system_users
                 WHERE LOWER(TRIM(username)) = LOWER(TRIM({placeholder}))
-                  AND role IN ('user', 'student', 'faculty', 'vendor_admin', 'owner')
+                  AND role IN ('super_admin', 'vendor_admin', 'admin', 'owner')
                 LIMIT 1""",
             (email,),
         )
         account = c.fetchone()
-
-        # Student usernames are IDs, so resolve their registered email through
-        # the linked face record's configurable JSON fields.
-        if not account:
-            c.execute(
-                f"""SELECT su.username, su.role, su.vendor_id, f.custom_data
-                    FROM system_users su
-                    JOIN faces f ON f.id = su.person_id AND f.vendor_id = su.vendor_id
-                    WHERE su.role IN ('user', 'student', 'faculty')
-                      AND LOWER(f.custom_data) LIKE LOWER({placeholder})
-                    LIMIT 20""",
-                (f"%{email}%",),
-            )
-            profile_matches = []
-            for candidate in c.fetchall() or []:
-                custom_raw = candidate["custom_data"] if hasattr(candidate, "keys") else candidate[3]
-                try:
-                    custom_data = json.loads(custom_raw) if isinstance(custom_raw, str) else (custom_raw or {})
-                except (TypeError, ValueError):
-                    continue
-                registered_email = next(
-                    (custom_data.get(key) for key in ("email", "Email", "student_email", "faculty_email") if custom_data.get(key)),
-                    None,
-                )
-                if str(registered_email or "").strip().lower() == email:
-                    profile_matches.append(candidate)
-            if len(profile_matches) > 1:
-                return jsonify({"error": "Multiple accounts use this email. Please contact your administrator."}), 409
-            account = profile_matches[0] if profile_matches else None
 
         # Vendor administrators may use a non-email username while the email is
         # stored on the vendor record.
@@ -102,7 +74,7 @@ def forgot_password():
                     FROM system_users su
                     JOIN vendors v ON v.id = su.vendor_id
                     WHERE LOWER(TRIM(v.email)) = LOWER(TRIM({placeholder}))
-                      AND su.role IN ('vendor_admin', 'owner')
+                      AND su.role IN ('vendor_admin', 'admin', 'owner')
                     ORDER BY CASE WHEN su.role = 'vendor_admin' THEN 0 ELSE 1 END
                     LIMIT 1""",
                 (email,),
@@ -125,9 +97,8 @@ def forgot_password():
             return jsonify({"error": "This email is already assigned to another login account"}), 409
 
         temporary_password = _temporary_password()
-        # Forgot-password is also a safe migration path for legacy accounts
-        # whose username was an employee/student ID. From this point onward the
-        # account identity is the verified email address used for the reset.
+        # This also migrates a legacy administrator username to its verified
+        # email address so subsequent web logins use one stable identity.
         c.execute(f"DELETE FROM active_sessions WHERE username = {placeholder}", (username,))
         c.execute(
             f"""UPDATE system_users
@@ -555,6 +526,15 @@ def login():
             pass_condition = True
         # 2. If it didn't match hash, check if it's the mobile number and they HAVE a custom password set
         elif is_student and is_entering_mobile and has_set_password:
+            if not can_use_password_login(user.get("role"), platform):
+                conn.close()
+                return jsonify({
+                    "error": (
+                        "Email and password web login is available to administrators only. "
+                        "Students and staff should use Continue with Google."
+                    ),
+                    "code": "WEB_PASSWORD_ADMIN_ONLY",
+                }), 403
             # They entered ID + Mobile, but they have a custom password.
             # Check if they also provided the secondary password
             secondary_password = request.json.get('secondary_password')
@@ -590,6 +570,16 @@ def login():
             )
         
     if pass_condition:
+        if not can_use_password_login(user.get("role"), platform):
+            conn.close()
+            return jsonify({
+                "error": (
+                    "Email and password web login is available to administrators only. "
+                    "Students and staff should use Continue with Google."
+                ),
+                "code": "WEB_PASSWORD_ADMIN_ONLY",
+            }), 403
+
         is_student_mobile_login = user.get("role") in {"student", "resident"}
         app_type = (data.get('app_type', '') if data else '').strip().lower()
         _is_kiosk_request = platform.lower() == "kiosk" or app_type == "tapinx"

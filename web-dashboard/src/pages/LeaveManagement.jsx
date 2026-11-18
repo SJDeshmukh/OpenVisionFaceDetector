@@ -30,7 +30,7 @@ import { getBusinessTerminology, usesStudentRecords, isHostelVertical } from '..
 import PageLoader from '../components/PageLoader';
 
 const LeaveManagement = () => {
-  const { user, staffSession, loginAsStaff, logout, logoutStaff } = useAuth();
+  const { user, staffSession, loginAsStaff, logoutStaff } = useAuth();
   const terminology = getBusinessTerminology(user?.vertical);
   const isStudentFlow = usesStudentRecords(user?.vertical);
   const isHostel = isHostelVertical(user?.vertical);
@@ -449,19 +449,6 @@ const LeaveManagement = () => {
       alert("Error generating logins: " + (err.response?.data?.error || err.message));
     } finally {
       setGenerating(false);
-    }
-  };
-
-  const handleResetPassword = async () => {
-    if (!window.confirm("This will reset your password to your registered mobile number and LOG YOU OUT. Are you sure?")) return;
-    
-    try {
-      await axios.post(`${API_URL}/auth/student/reset-to-default`, {});
-      alert("Password reset successfully! Please login again with your mobile number.");
-      const result = await logout();
-      if (!result.success) throw new Error(result.error || 'Unable to close the current session');
-    } catch (err) {
-      alert("Error resetting password: " + (err.response?.data?.error || err.message));
     }
   };
 
@@ -1038,23 +1025,6 @@ const LeaveManagement = () => {
                 </button>
               </form>
 
-              {/* Reset Password section for students */}
-              <div className="mt-8 pt-6 border-t border-slate-100 italic">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                       <RotateCcw size={16} className="text-slate-400" /> Security Settings
-                    </h4>
-                    <p className="text-xs text-slate-500 mt-1">Reset your custom password back to your mobile number</p>
-                  </div>
-                  <button
-                    onClick={handleResetPassword}
-                    className="flex items-center gap-2 px-4 py-2 text-slate-600 hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors text-xs font-bold uppercase tracking-wider"
-                  >
-                    Reset Password
-                  </button>
-                </div>
-              </div>
             </div>
           ) : activeTab === 'pending' ? (
             filteredRequests.length > 0 ? (
