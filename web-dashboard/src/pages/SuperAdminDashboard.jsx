@@ -2184,7 +2184,7 @@ const SuperAdminDashboard = () => {
                     </span>
                   </div>
                   <p className="mt-1 max-w-3xl text-sm leading-5 text-slate-500">
-                    Automatically applies Summer, Rainy, Winter, Autumn or Snow atmosphere across TapInX from live local weather. Turning it off restores the standard Day/Night theme.
+                    XChat infers the normal Indian seasonal condition from the current date and region, then applies Summer, Rainy, Winter, Autumn or Snow across TapInX. Turning it off restores Day/Night mode.
                   </p>
                 </div>
               </div>

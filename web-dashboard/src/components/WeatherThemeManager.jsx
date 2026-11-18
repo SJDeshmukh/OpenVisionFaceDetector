@@ -24,7 +24,7 @@ const applyWeatherTheme = (data) => {
   const root = document.documentElement;
   root.setAttribute('data-weather-theme', data.theme);
   root.setAttribute('data-weather-is-day', data.is_day ? 'true' : 'false');
-  root.setAttribute('data-weather-condition', String(data.condition || 'Current weather').slice(0, 80));
+  root.setAttribute('data-weather-condition', String(data.condition || 'Seasonal condition').slice(0, 80));
 };
 
 const getBrowserCoordinates = () => new Promise((resolve) => {
@@ -104,22 +104,12 @@ const WeatherThemeManager = () => {
   }, [refreshTheme, socket]);
 
   return (
-    <>
-      <div className="weather-atmosphere" aria-hidden="true">
-        <span className="weather-atmosphere__sky" />
-        <span className="weather-atmosphere__orb" />
-        <span className="weather-atmosphere__particles" />
-        <span className="weather-atmosphere__foreground" />
-      </div>
-      <a
-        className="weather-attribution"
-        href="https://open-meteo.com/"
-        target="_blank"
-        rel="noreferrer"
-      >
-        Weather data by Open-Meteo
-      </a>
-    </>
+    <div className="weather-atmosphere" aria-hidden="true">
+      <span className="weather-atmosphere__sky" />
+      <span className="weather-atmosphere__orb" />
+      <span className="weather-atmosphere__particles" />
+      <span className="weather-atmosphere__foreground" />
+    </div>
   );
 };
 

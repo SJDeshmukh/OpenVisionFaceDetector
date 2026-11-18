@@ -1,4 +1,4 @@
-"""Global weather-theme controls and authenticated live-theme resolution."""
+"""Global controls and authenticated AI seasonal-theme resolution for India."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from flask import Blueprint, g, jsonify, request
 from middleware.handlers import get_client_ip, rate_limit
 from services.auth_service import require_auth
 from services.weather_theme_service import (
-    WeatherThemeError,
     resolve_weather_theme,
     validate_coordinates,
 )
@@ -84,10 +83,8 @@ def _device_coordinates(vendor_id):
 
 
 def _default_coordinates():
-    latitude = os.environ.get("WEATHER_THEME_DEFAULT_LATITUDE", "").strip()
-    longitude = os.environ.get("WEATHER_THEME_DEFAULT_LONGITUDE", "").strip()
-    if not latitude or not longitude:
-        return None
+    latitude = os.environ.get("WEATHER_THEME_DEFAULT_LATITUDE", "20.5937").strip()
+    longitude = os.environ.get("WEATHER_THEME_DEFAULT_LONGITUDE", "78.9629").strip()
     try:
         return validate_coordinates(latitude, longitude)
     except ValueError:
@@ -158,7 +155,7 @@ def current_weather_theme():
         location_source = "registered_device" if coordinates else None
     if coordinates is None:
         coordinates = _default_coordinates()
-        location_source = "configured_default" if coordinates else None
+        location_source = "india_default" if coordinates else None
     if coordinates is None:
         return jsonify({
             "enabled": True,
@@ -167,15 +164,6 @@ def current_weather_theme():
             "message": "Location is unavailable; using the standard day/night theme",
         })
 
-    try:
-        result = resolve_weather_theme(*coordinates)
-        return jsonify({"enabled": True, "location_source": location_source, **result})
-    except WeatherThemeError as exc:
-        logger.info("Weather theme fallback for %s: %s", getattr(g, "username", "unknown"), exc)
-        return jsonify({
-            "enabled": True,
-            "available": False,
-            "theme": None,
-            "message": "Live weather is unavailable; using the standard day/night theme",
-        })
+    result = resolve_weather_theme(*coordinates)
+    return jsonify({"enabled": True, "location_source": location_source, **result})
 

@@ -1,19 +1,23 @@
-import os
 import unittest
+from datetime import datetime
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
 from services import weather_theme_service as service
+
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class WeatherThemeServiceTests(unittest.TestCase):
     def setUp(self):
         service._CACHE.clear()
 
-    def test_precipitation_and_temperature_extremes_are_deterministic(self):
-        self.assertEqual(service.deterministic_theme({"weather_code": 73, "temperature_2m": -1}, 20)[0], "snow")
-        self.assertEqual(service.deterministic_theme({"weather_code": 63, "temperature_2m": 24}, 20)[0], "rainy")
-        self.assertEqual(service.deterministic_theme({"weather_code": 0, "temperature_2m": 34}, 20)[0], "summer")
-        self.assertEqual(service.deterministic_theme({"weather_code": 2, "temperature_2m": 8}, 20)[0], "winter")
+    def test_india_seasonal_fallback_covers_normal_periods(self):
+        self.assertEqual(service.normal_india_theme(4, 20)[0], "summer")
+        self.assertEqual(service.normal_india_theme(7, 20)[0], "rainy")
+        self.assertEqual(service.normal_india_theme(12, 20)[0], "winter")
+        self.assertEqual(service.normal_india_theme(10, 20)[0], "autumn")
 
     def test_coordinates_reject_non_finite_and_out_of_range_values(self):
         for latitude, longitude in [("nan", 10), (91, 10), (10, 181), (None, 10)]:
@@ -21,61 +25,40 @@ class WeatherThemeServiceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     service.validate_coordinates(latitude, longitude)
 
-    @patch("services.weather_theme_service.requests.get")
-    def test_live_result_is_classified_and_cached_without_repeating_provider_call(self, get):
-        response = Mock()
-        response.raise_for_status.return_value = None
-        response.json.return_value = {
-            "timezone": "Asia/Kolkata",
-            "current": {
-                "time": "2026-11-18T10:15",
-                "temperature_2m": 25.2,
-                "apparent_temperature": 26.1,
-                "relative_humidity_2m": 82,
-                "precipitation": 0.4,
-                "rain": 0.4,
-                "showers": 0,
-                "snowfall": 0,
-                "weather_code": 61,
-                "cloud_cover": 88,
-                "wind_speed_10m": 12,
-                "is_day": 1,
-            },
-        }
-        get.return_value = response
+    def test_llm_is_primary_and_result_is_cached_for_nearby_users(self):
+        provider = Mock()
+        provider.providers = None
+        provider.complete.return_value = {"content": "rainy"}
+        now = datetime(2026, 7, 18, 10, 0, tzinfo=IST)
 
-        weather_endpoint = "https://customer-api.open-meteo.com/v1/forecast"
-        with patch.dict(os.environ, {
-            "WEATHER_THEME_LLM_ASSISTANCE": "false",
-            "WEATHER_API_BASE_URL": weather_endpoint,
-            "OPEN_METEO_API_KEY": "test-api-key",
-        }):
-            first = service.resolve_weather_theme(19.9975, 73.7898)
-            second = service.resolve_weather_theme(20.01, 73.81)
+        with patch("services.xchat_service.configured_provider", return_value=provider):
+            first = service.resolve_weather_theme(19.9975, 73.7898, now=now)
+            second = service.resolve_weather_theme(20.01, 73.81, now=now)
 
         self.assertEqual(first["theme"], "rainy")
-        self.assertEqual(first["condition"], "Slight rain")
+        self.assertEqual(first["selection_source"], "llm_india_seasonal")
         self.assertFalse(first["cached"])
         self.assertTrue(second["cached"])
-        get.assert_called_once()
-        self.assertEqual(get.call_args.args[0], weather_endpoint)
-        self.assertEqual(get.call_args.kwargs["params"]["apikey"], "test-api-key")
+        provider.complete.assert_called_once()
 
-    def test_llm_output_is_allowlisted_and_physically_constrained(self):
-        mild = {
-            "time": "2026-11-18T10:15",
-            "weather_code": 2,
-            "temperature_2m": 24,
-            "apparent_temperature": 24,
-            "relative_humidity_2m": 45,
-            "cloud_cover": 35,
-            "wind_speed_10m": 5,
-            "is_day": 1,
-        }
+    def test_invalid_llm_output_uses_india_seasonal_fallback(self):
         provider = Mock()
-        provider.complete.return_value = {"content": "snow"}
+        provider.providers = None
+        provider.complete.return_value = {"content": "storm"}
+        now = datetime(2026, 4, 18, 10, 0, tzinfo=IST)
         with patch("services.xchat_service.configured_provider", return_value=provider):
-            self.assertIsNone(service._llm_theme(mild, 20, "autumn"))
+            result = service.resolve_weather_theme(19.9, 73.7, now=now)
+        self.assertEqual(result["theme"], "summer")
+        self.assertEqual(result["selection_source"], "india_seasonal_fallback")
+
+    def test_snow_response_is_rejected_outside_himalayan_winter(self):
+        provider = Mock()
+        provider.providers = None
+        provider.complete.return_value = {"content": "snow"}
+        now = datetime(2026, 7, 18, 10, 0, tzinfo=IST)
+        with patch("services.xchat_service.configured_provider", return_value=provider):
+            result = service.resolve_weather_theme(19.9, 73.7, now=now)
+        self.assertEqual(result["theme"], "rainy")
 
 
 if __name__ == "__main__":
