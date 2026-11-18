@@ -6,6 +6,7 @@ import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
 import RegistrationConfigEditor from '../components/RegistrationConfigEditor';
 import FleetMapTab from '../components/FleetMapTab';
+import PageLoader from '../components/PageLoader';
 import { DEFAULT_STAFF_NAV_KEYS, staffNavItemsForFeatures, toggleStaffNavKey } from '../lib/staffNavigation';
 
 const REPORT_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -2028,7 +2029,7 @@ const SuperAdminDashboard = () => {
     }
   };
 
-  if (loading) return <div className="p-8">Loading...</div>;
+  if (loading) return <PageLoader label="Loading vendor workspace" description="Preparing subscriptions, features and operational status…" />;
 
   return (
     <div className="p-3 sm:p-6 bg-slate-50 min-h-screen min-w-0">

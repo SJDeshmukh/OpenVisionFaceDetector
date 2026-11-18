@@ -136,6 +136,13 @@ def purge_vendor_database(conn, vendor_id):
         )
         deleted["leave_workflow_stages"] = max(0, int(cursor.rowcount or 0))
 
+    if "notification_read_receipts" in tables:
+        cursor.execute(
+            "DELETE FROM notification_read_receipts WHERE scope_vendor_id = ?",
+            (vendor_id,),
+        )
+        deleted["notification_read_receipts"] = max(0, int(cursor.rowcount or 0))
+
     vendor_tables = {
         table: "target_vendor_id" if "target_vendor_id" in columns else "vendor_id"
         for table, columns in table_columns.items()

@@ -28,6 +28,9 @@ def test_vendor_purge_removes_new_and_legacy_tenant_data_and_releases_identity()
         CREATE TABLE active_sessions (token TEXT PRIMARY KEY, vendor_id INTEGER);
         CREATE TABLE system_settings (key TEXT PRIMARY KEY, value TEXT);
         CREATE TABLE archive_objects (id INTEGER PRIMARY KEY, vendor_id INTEGER);
+        CREATE TABLE notification_read_receipts (
+            scope_vendor_id INTEGER, principal_key TEXT, notification_key TEXT
+        );
 
         INSERT INTO vendors VALUES (1, 'Delete Me'), (2, 'Keep Me');
         INSERT INTO faces VALUES (10, 1, 'old-face'), (20, 2, 'keep-face');
@@ -42,6 +45,8 @@ def test_vendor_purge_removes_new_and_legacy_tenant_data_and_releases_identity()
         INSERT INTO system_settings VALUES ('threshold_vendor_1', '0.6');
         INSERT INTO system_settings VALUES ('threshold_vendor_2', '0.7');
         INSERT INTO archive_objects VALUES (10, 1), (20, 2);
+        INSERT INTO notification_read_receipts VALUES (1, 'owner:old', 'advance:1:pending');
+        INSERT INTO notification_read_receipts VALUES (2, 'owner:keep', 'advance:2:pending');
     """)
 
     deleted = purge_vendor_database(conn, 1)
@@ -59,6 +64,13 @@ def test_vendor_purge_removes_new_and_legacy_tenant_data_and_releases_identity()
     assert conn.execute(
         "SELECT COUNT(*) FROM system_settings WHERE key = 'threshold_vendor_1'"
     ).fetchone()[0] == 0
+    assert deleted["notification_read_receipts"] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM notification_read_receipts WHERE scope_vendor_id = 1"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM notification_read_receipts WHERE scope_vendor_id = 2"
+    ).fetchone()[0] == 1
 
     # The deleted email is immediately reusable by a newly registered company.
     conn.execute("INSERT INTO system_users VALUES ('vendor@example.com', 2)")

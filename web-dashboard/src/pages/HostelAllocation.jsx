@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
+import PageLoader from '../components/PageLoader';
 
 const EMPTY = { buildings: [], residents: [], history: [], summary: {}, permissions: {} };
 
@@ -332,7 +333,7 @@ export default function HostelAllocation() {
     if (bed) { setBuildingId(String(bed.building.id)); setCollapsed(current => { const next = new Set(current); next.delete(bed.floor.id); return next; }); setSelectedRoomId(bed.room.id); setSelectedBedId(bed.id); }
   };
 
-  if (loading) return <div className="grid min-h-[520px] place-items-center rounded-3xl border border-slate-200 bg-white shadow-sm"><div className="text-center"><span className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-indigo-50 text-indigo-600"><Loader2 className="animate-spin" size={27} /></span><h2 className="font-bold text-slate-900">Loading hostel allocation</h2><p className="mt-1 text-sm text-slate-500">Preparing buildings, rooms, beds and residents…</p></div></div>;
+  if (loading) return <PageLoader label="Loading hostel allocation" description="Preparing buildings, rooms, beds and residents…" />;
 
   return <div className="hostel-allocation relative space-y-5 pb-8" aria-busy={busy}>
     <Toast toast={toast} onClose={() => setToast(null)} />

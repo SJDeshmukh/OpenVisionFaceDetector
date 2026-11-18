@@ -27,6 +27,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { getBusinessTerminology, usesStudentRecords, isHostelVertical } from '../lib/businessTerminology';
+import PageLoader from '../components/PageLoader';
 
 const LeaveManagement = () => {
   const { user, staffSession, loginAsStaff, logout, logoutStaff } = useAuth();
@@ -798,9 +799,7 @@ const LeaveManagement = () => {
       )}
 
       {loading ? (
-        <div className="flex justify-center py-12">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-        </div>
+        <PageLoader compact label="Loading leave requests" description="Checking workflow stages and approval history…" />
       ) : (
         <div className="grid grid-cols-1 gap-4">
           {activeTab === 'workflow' ? (

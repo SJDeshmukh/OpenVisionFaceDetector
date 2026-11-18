@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { Image as ImageIcon } from 'lucide-react';
 import BrandLogo from './BrandLogo';
+import NotificationCenter from './NotificationCenter';
 import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
 import { staffCanAccessNav, staffCanAccessPath } from '../lib/staffNavigation';
 
@@ -372,19 +373,7 @@ export const Topbar = ({ onToggleSidebar }) => {
       </div>
 
       <div className="flex items-center gap-3">
-        {/* Notification bell */}
-        <button
-          className="relative p-2.5 rounded-xl transition-all duration-200"
-          style={{ color: 'var(--text-muted)', background: 'var(--bg-btn-ghost)' }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost-hover)'; e.currentTarget.style.color = 'var(--text-muted-hover)'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
-        >
-          <Bell size={18} />
-          <span
-            className="absolute top-2 right-2 w-2 h-2 rounded-full"
-            style={{ background: '#FF5C78', border: '1px solid var(--bg-topbar)' }}
-          />
-        </button>
+        <NotificationCenter />
 
         {/* Animated day/night theme switch, adapted from Galahhad's Uiverse switch. */}
         <label

@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
 import { Server, ListOrdered, Activity, RefreshCcw } from 'lucide-react';
 import { Shield } from 'lucide-react';
+import PageLoader from '../components/PageLoader';
 
 const JobsDashboard = () => {
   const { user } = useAuth();
@@ -68,7 +69,7 @@ const JobsDashboard = () => {
   useEffect(() => { fetchEvents(); }, [statusFilter, queueFilter, nameFilter]);
   useEffect(() => { fetchMetrics(); }, [bucket, windowMinutes]);
 
-  if (loading) return <div className="p-6">Loading jobs…</div>;
+  if (loading) return <PageLoader label="Loading background jobs" description="Reading queue, worker and delivery activity…" />;
   if (error) return <div className="p-6 text-red-600">Error: {error}</div>;
 
   const totalActive = Object.values(queues?.active || {}).reduce((acc, arr) => acc + (Array.isArray(arr) ? arr.length : 0), 0);

@@ -34,6 +34,7 @@ import {
 } from 'recharts';
 import { API_URL } from '../config';
 import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
+import PageLoader from '../components/PageLoader';
 
 const COLORS = ['#22c55e', '#f59e0b', '#ef4444'];
 
@@ -802,10 +803,7 @@ const Reports = () => {
       )}
 
       {loading ? (
-        <div className="text-center py-20">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-slate-500">Loading analytics data...</p>
-        </div>
+        <PageLoader compact label="Loading analytics" description="Calculating the selected attendance view…" />
       ) : (
         <>
           {/* Summary Cards */}

@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import axios from 'axios';
 import { API_URL } from '../config';
+import PageLoader from '../components/PageLoader';
 
 axios.defaults.withCredentials = true;
 
@@ -350,7 +351,9 @@ export const AuthProvider = ({ children }) => {
       user, staffSession, login, googleLogin, logout, loginAsStaff, logoutStaff,
       loading, refreshFeatures: refreshUserData, refreshUserData,
     }}>
-      {!loading && children}
+      {loading
+        ? <PageLoader fullScreen label="Opening TapInX" description="Restoring your secure workspace…" />
+        : children}
     </AuthContext.Provider>
   );
 };

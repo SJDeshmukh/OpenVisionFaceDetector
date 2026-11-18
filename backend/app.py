@@ -428,6 +428,9 @@ app.register_blueprint(workforce_config_bp, url_prefix='/api')
 from routes.academic import academic_bp
 app.register_blueprint(academic_bp, url_prefix='/api')
 
+from routes.notification_center import notification_center_bp
+app.register_blueprint(notification_center_bp, url_prefix='/api')
+
 register_error_handlers(app)
 
 # --- Serve Frontend (SPA) ---

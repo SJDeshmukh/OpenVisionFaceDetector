@@ -3,6 +3,7 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
 import { Activity, Database, Server, Zap } from 'lucide-react';
+import PageLoader from '../components/PageLoader';
 
 const SystemHealth = () => {
   const { user } = useAuth();
@@ -37,7 +38,7 @@ const SystemHealth = () => {
     fetchHealth();
   }, [user?.token]);
 
-  if (loading) return <div className="p-6">Loading system health…</div>;
+  if (loading) return <PageLoader label="Loading system health" description="Checking the database, queues and report services…" />;
   if (error) return <div className="p-6 text-red-600">Error: {error}</div>;
 
   return (
