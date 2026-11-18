@@ -82,6 +82,23 @@ const isNameField = (field) => field?.is_name || ['name', 'full_name', 'student_
 const isPhoneField = (field) => field?.is_phone || ['phone', 'mobile', 'mobile_number', 'phone_number', 'contact_number'].includes(normalizedFieldIdentity(field));
 const isClassField = (field) => ['class', 'class_id', 'class_section'].includes(normalizedFieldIdentity(field));
 const isBranchField = (field) => ['branch', 'stream', 'course'].includes(normalizedFieldIdentity(field));
+const editableSpreadsheetFieldTypes = [
+  { value: 'text', label: 'Text' },
+  { value: 'number', label: 'Numerical' },
+  { value: 'select', label: 'Dropdown' },
+];
+const normalizedRegistrationFieldType = (value) => {
+  const normalized = String(value || 'text').trim().toLowerCase();
+  return normalized === 'dropdown' ? 'select' : normalized;
+};
+const registrationFieldTypeLabel = (value) => {
+  const normalized = normalizedRegistrationFieldType(value);
+  if (normalized === 'number') return 'Numerical';
+  if (normalized === 'select') return 'Dropdown';
+  if (normalized === 'class_select') return 'Class selector';
+  if (normalized === 'multiselect') return 'Multi-select';
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+};
 const peopleCachePayload = (people) => people.map((person) => {
   const cached = { ...person };
   delete cached.templates;
@@ -140,6 +157,7 @@ const People = () => {
   const groupsLabel = terminology.groups;
   const staffLabel = terminology.staff;
   const staffPluralLabel = terminology.staffPlural;
+  const canManageRegistrationFields = ['super_admin', 'vendor_admin', 'admin', 'owner'].includes(user?.role);
   const peopleCacheKey = `people_cache_${user?.vendor_id}_${schoolFlow ? 'student' : 'people'}_${user?.role || 'anonymous'}_${user?.username || ''}`;
   const [users, setUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -154,6 +172,10 @@ const People = () => {
   const [vendorDepartments, setVendorDepartments] = useState([]);
   const [vendorClasses, setVendorClasses] = useState([]);
   const [bulkAttendanceFields, setBulkAttendanceFields] = useState([]);
+  const [isFieldManagerOpen, setIsFieldManagerOpen] = useState(false);
+  const [editableRegistrationFields, setEditableRegistrationFields] = useState([]);
+  const [fieldManagerSaving, setFieldManagerSaving] = useState(false);
+  const [fieldManagerError, setFieldManagerError] = useState('');
   const [isBulkImportModalOpen, setIsBulkImportModalOpen] = useState(false);
   const [bulkImportProgress, setBulkImportProgress] = useState(null);
   const [bulkImportError, setBulkImportError] = useState(null);
@@ -1307,6 +1329,101 @@ const People = () => {
     return baseColumns;
   }, [vendorConfig, bulkAttendanceFields, user?.features, requiresClassroomAllocation, groupLabel, terminology]);
 
+  const openFieldManager = () => {
+    const fields = (vendorConfig || []).map((field) => ({
+      ...field,
+      field: String(field?.field || field?.key || field?.name || '').trim(),
+      label: String(field?.label || field?.field || field?.key || field?.name || '').trim(),
+      type: normalizedRegistrationFieldType(field?.type),
+      required: Boolean(field?.required),
+      enabled: field?.enabled !== false,
+      options: Array.isArray(field?.options)
+        ? Array.from(new Set(field.options.map(option => String(option).trim()).filter(Boolean)))
+        : [],
+      optionDraft: '',
+    })).filter(field => field.field);
+    setEditableRegistrationFields(fields);
+    setFieldManagerError('');
+    setIsFieldManagerOpen(true);
+  };
+
+  const updateManagedField = (index, patch) => {
+    setEditableRegistrationFields(prev => prev.map((field, fieldIndex) => (
+      fieldIndex === index ? { ...field, ...patch } : field
+    )));
+  };
+
+  const addManagedFieldOption = (index) => {
+    setEditableRegistrationFields(prev => prev.map((field, fieldIndex) => {
+      if (fieldIndex !== index) return field;
+      const option = String(field.optionDraft || '').trim();
+      if (!option || field.options.some(existing => existing.toLowerCase() === option.toLowerCase())) {
+        return { ...field, optionDraft: '' };
+      }
+      return { ...field, options: [...field.options, option], optionDraft: '' };
+    }));
+  };
+
+  const removeManagedFieldOption = (fieldIndex, optionIndex) => {
+    setEditableRegistrationFields(prev => prev.map((field, index) => (
+      index === fieldIndex
+        ? { ...field, options: field.options.filter((_, currentOptionIndex) => currentOptionIndex !== optionIndex) }
+        : field
+    )));
+  };
+
+  const saveManagedFields = async () => {
+    const emptyDropdown = editableRegistrationFields.find(field => (
+      field.enabled
+      && field.type === 'select'
+      && field.options.length === 0
+      && !field.options_source
+      && !isNameField(field)
+      && !isPhoneField(field)
+      && !field.is_id
+    ));
+    if (emptyDropdown) {
+      setFieldManagerError(`Add at least one dropdown option for ${emptyDropdown.label}.`);
+      return;
+    }
+
+    const config = editableRegistrationFields.map((field) => {
+      const coreTextField = isNameField(field) || isPhoneField(field) || field.is_id;
+      const item = {
+        field: field.field,
+        name: field.field,
+        label: field.label || field.field,
+        type: coreTextField ? 'text' : field.type,
+        required: isNameField(field) || isClassField(field) ? true : Boolean(field.required),
+        enabled: field.enabled !== false,
+        options: !coreTextField && ['select', 'multiselect'].includes(field.type) ? field.options : [],
+        is_name: Boolean(field.is_name),
+        is_phone: Boolean(field.is_phone),
+        is_id: Boolean(field.is_id),
+      };
+      if (field.options_source) item.options_source = field.options_source;
+      if (field.default !== undefined) item.default = Boolean(field.default);
+      return item;
+    });
+
+    setFieldManagerSaving(true);
+    setFieldManagerError('');
+    try {
+      const response = await axios.put(
+        `${API_URL}/admin/vendors/${user.vendor_id}/registration-config`,
+        { config }
+      );
+      setVendorConfig(response.data.config || config);
+      setIsFieldManagerOpen(false);
+      addToast('Registration column types updated.');
+      fetchConfig();
+    } catch (error) {
+      setFieldManagerError(error.response?.data?.error || 'Unable to update registration columns.');
+    } finally {
+      setFieldManagerSaving(false);
+    }
+  };
+
   // Dynamically identify the Name header from the registration config
   const nameHeaderObj = registrationColumns.find(isNameField);
   const nameHeader = nameHeaderObj?.label || personLabel;
@@ -1713,6 +1830,15 @@ const People = () => {
                 >
                   <Plus size={18} /> Add {personLabel}
                 </button>
+                {canManageRegistrationFields && (
+                  <button
+                    onClick={openFieldManager}
+                    className="flex items-center gap-2 bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-50 font-medium transition-all shadow-sm"
+                    title="View and edit the data type used by each imported column"
+                  >
+                    <Type size={18} /> Manage Fields
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     setBulkImportPhase(requiresClassroomAllocation ? 'cards' : 'upload');
@@ -2139,11 +2265,29 @@ const People = () => {
                           </th>
                         )}
                         <th className="px-6 py-4 font-bold">
-                          {renderHeaderWithFilter(nameHeader, '__name', getColumnUniqueValues('__name'))}
+                          <div className="flex items-center gap-2 whitespace-nowrap">
+                            {renderHeaderWithFilter(nameHeader, '__name', getColumnUniqueValues('__name'))}
+                            {nameHeaderObj && (
+                              <span
+                                className="rounded-full border border-slate-200 bg-white px-1.5 py-0.5 text-[9px] font-bold normal-case tracking-normal text-slate-500"
+                                title={`Column data type: ${registrationFieldTypeLabel(nameHeaderObj.type)}`}
+                              >
+                                {registrationFieldTypeLabel(nameHeaderObj.type)}
+                              </span>
+                            )}
+                          </div>
                         </th>
                         {tableColumns.map(col => (
                           <th key={col.field} className="px-6 py-4 font-bold">
-                            {renderHeaderWithFilter(col.label, col.field, getColumnUniqueValues(col.field))}
+                            <div className="flex items-center gap-2 whitespace-nowrap">
+                              {renderHeaderWithFilter(col.label, col.field, getColumnUniqueValues(col.field))}
+                              <span
+                                className="rounded-full border border-slate-200 bg-white px-1.5 py-0.5 text-[9px] font-bold normal-case tracking-normal text-slate-500"
+                                title={`Column data type: ${registrationFieldTypeLabel(col.type)}`}
+                              >
+                                {registrationFieldTypeLabel(col.type)}
+                              </span>
+                            </div>
                           </th>
                         ))}
                         {isHostel && (
@@ -2463,6 +2607,9 @@ const People = () => {
                       <label className="text-sm font-medium text-slate-700">
                         {col.label}
                         {col.required && <span className="text-red-500 ml-1">*</span>}
+                        <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                          {registrationFieldTypeLabel(inputType)}
+                        </span>
                       </label>
                       {['select', 'dropdown', 'multiselect'].includes(inputType) ? (
                         <select
@@ -2593,6 +2740,193 @@ const People = () => {
           </div>
         </div>
       )}
+
+      {/* Imported registration column manager */}
+      {isFieldManagerOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex shrink-0 items-start justify-between border-b border-slate-100 bg-slate-50/70 px-6 py-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Type size={20} className="text-blue-600" />
+                  <h2 className="text-xl font-bold text-slate-800">Registration Fields</h2>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  These are the columns saved from the latest Excel import. Their types control the table and the {personLabel.toLowerCase()} edit form.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsFieldManagerOpen(false)}
+                disabled={fieldManagerSaving}
+                className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="Close registration field manager"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="flex-1 space-y-3 overflow-y-auto p-6">
+              {editableRegistrationFields.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center">
+                  <Type size={30} className="mx-auto mb-3 text-slate-300" />
+                  <p className="font-semibold text-slate-700">No imported fields are configured yet.</p>
+                  <p className="mt-1 text-xs text-slate-500">Upload an Excel or CSV file first; its columns will appear here.</p>
+                </div>
+              ) : editableRegistrationFields.map((field, fieldIndex) => {
+                const typeIsEditable = editableSpreadsheetFieldTypes.some(type => type.value === field.type)
+                  && !isNameField(field)
+                  && !isPhoneField(field)
+                  && !field.is_id
+                  && !isClassField(field)
+                  && !field.options_source;
+                const requiredIsLocked = isNameField(field) || isClassField(field);
+                return (
+                  <div key={`${field.field}-${fieldIndex}`} className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0 flex-1">
+                        <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                          Display label
+                        </label>
+                        <input
+                          type="text"
+                          value={field.label}
+                          maxLength={160}
+                          onChange={(event) => updateManagedField(fieldIndex, { label: event.target.value })}
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/15"
+                        />
+                        <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-400">
+                          <span>Excel/system key:</span>
+                          <code className="rounded bg-slate-200/70 px-1.5 py-0.5 text-slate-600">{field.field}</code>
+                        </div>
+                      </div>
+
+                      <div className="shrink-0">
+                        <div className="mb-1 flex items-center justify-between gap-3">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Data type</span>
+                          <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700">
+                            {registrationFieldTypeLabel(field.type)}
+                          </span>
+                        </div>
+                        {typeIsEditable ? (
+                          <div className="flex items-center gap-1 rounded-lg bg-slate-200/80 p-1">
+                            {editableSpreadsheetFieldTypes.map(type => (
+                              <button
+                                key={type.value}
+                                type="button"
+                                onClick={() => updateManagedField(fieldIndex, { type: type.value })}
+                                className={`rounded-md px-2.5 py-1.5 text-xs font-semibold transition-all ${
+                                  field.type === type.value
+                                    ? 'bg-white text-blue-600 shadow-sm'
+                                    : 'text-slate-600 hover:text-slate-900'
+                                }`}
+                              >
+                                {type.label}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+                            Managed by the system configuration
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex items-center gap-5 border-t border-slate-200/80 pt-3">
+                      <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={requiredIsLocked || field.required}
+                          disabled={requiredIsLocked}
+                          onChange={(event) => updateManagedField(fieldIndex, { required: event.target.checked })}
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                        Required during registration{requiredIsLocked ? ' (system)' : ''}
+                      </label>
+                    </div>
+
+                    {field.type === 'select' && !field.options_source && (
+                      <div className="mt-3 border-t border-slate-200/80 pt-3">
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                            Dropdown options ({field.options.length})
+                          </span>
+                          <span className="text-[10px] text-slate-400">Used when adding or editing a record</span>
+                        </div>
+                        <div className="mb-2 flex max-h-24 flex-wrap gap-1.5 overflow-y-auto">
+                          {field.options.map((option, optionIndex) => (
+                            <span key={`${option}-${optionIndex}`} className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700">
+                              {option}
+                              <button
+                                type="button"
+                                onClick={() => removeManagedFieldOption(fieldIndex, optionIndex)}
+                                className="ml-0.5 text-blue-400 hover:text-blue-800"
+                                aria-label={`Remove ${option}`}
+                              >
+                                <X size={12} />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={field.optionDraft}
+                            maxLength={160}
+                            placeholder="Add a dropdown option"
+                            onChange={(event) => updateManagedField(fieldIndex, { optionDraft: event.target.value })}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                addManagedFieldOption(fieldIndex);
+                              }
+                            }}
+                            className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/15"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => addManagedFieldOption(fieldIndex)}
+                            className="rounded-lg bg-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-300"
+                          >
+                            Add option
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {fieldManagerError && (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+                  {fieldManagerError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex shrink-0 items-center justify-end gap-3 border-t border-slate-100 bg-slate-50/80 px-6 py-4">
+              <button
+                type="button"
+                onClick={() => setIsFieldManagerOpen(false)}
+                disabled={fieldManagerSaving}
+                className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveManagedFields}
+                disabled={fieldManagerSaving || editableRegistrationFields.length === 0}
+                className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {fieldManagerSaving ? 'Saving...' : 'Save field types'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Bulk Import Modal */}
       {isBulkImportModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">

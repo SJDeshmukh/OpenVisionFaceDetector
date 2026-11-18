@@ -2286,8 +2286,10 @@ def update_vendor_registration_config(vendor_id):
         return error
     if caller_vendor_id and caller_vendor_id != vendor_id:
         return jsonify({"error": "Access Denied"}), 403
+    if g.user_role not in {'super_admin', 'vendor_admin', 'admin', 'owner'}:
+        return jsonify({"error": "Admin or owner access required"}), 403
 
-    data = request.json
+    data = request.get_json(silent=True) or {}
     config = data.get('config') # Expecting a list/object
     
     if config is None:
@@ -2334,9 +2336,13 @@ def update_vendor_registration_config(vendor_id):
         conn.commit()
         
         # Log Audit
-        log_audit('update_registration_config', data, target_vendor_id=vendor_id)
+        log_audit(
+            'update_registration_config',
+            {"count": len(config), "fields": [field.get("field") for field in config]},
+            target_vendor_id=vendor_id,
+        )
         
-        return jsonify({"status": "success"})
+        return jsonify({"status": "success", "config": config})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:

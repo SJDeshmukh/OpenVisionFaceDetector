@@ -16,6 +16,13 @@ _REGISTRATION_FIELD_ALIASES = {
     'work_shift': 'shift',
 }
 
+_ALLOWED_REGISTRATION_FIELD_TYPES = {
+    'text', 'number', 'select', 'multiselect', 'email', 'tel', 'date', 'time', 'class_select'
+}
+_BLOCKED_REGISTRATION_FIELD_NAMES = {'__proto__', 'prototype', 'constructor'}
+_MAX_REGISTRATION_FIELDS = 100
+_MAX_REGISTRATION_OPTIONS = 200
+
 
 def canonical_registration_field(value):
     """Return the stable payload key used for registration validation."""
@@ -109,25 +116,62 @@ def load_registration_config(vendor_id, conn):
     return hydrate_registration_config(vendor_id, normalize_registration_config(config), conn=conn)
 
 def normalize_registration_config(config):
-    """Return a deterministic registration schema with text as the default type."""
+    """Return a bounded, deterministic registration schema safe for dynamic forms."""
     if not isinstance(config, list):
         raise ValueError("registration configuration must be a list")
+    if len(config) > _MAX_REGISTRATION_FIELDS:
+        raise ValueError(f"registration configuration supports at most {_MAX_REGISTRATION_FIELDS} fields")
     normalized = []
     seen = set()
     for raw in config:
         if not isinstance(raw, dict):
             continue
-        field = str(raw.get('field') or raw.get('key') or raw.get('name') or '').strip()
+        field = str(raw.get('field') or raw.get('key') or raw.get('name') or '').strip()[:128]
         if not field or field.lower() in seen:
             continue
+        if field.lower() in _BLOCKED_REGISTRATION_FIELD_NAMES:
+            raise ValueError(f"unsupported registration field name: {field}")
         seen.add(field.lower())
-        item = dict(raw)
-        item['field'] = field
-        item.pop('key', None)
-        item['label'] = str(raw.get('label') or field).strip() or field
-        item['type'] = str(raw.get('type') or 'text').strip().lower() or 'text'
+        item = {
+            'field': field,
+            'name': field,
+            'label': (str(raw.get('label') or field).strip() or field)[:160],
+        }
+        field_type = str(raw.get('type') or 'text').strip().lower() or 'text'
+        if field_type == 'dropdown':
+            field_type = 'select'
+        if field_type not in _ALLOWED_REGISTRATION_FIELD_TYPES:
+            raise ValueError(f"unsupported registration field type: {field_type}")
+        if (
+            canonical_registration_field(field) in {'name', 'phone'}
+            or bool(raw.get('is_name'))
+            or bool(raw.get('is_phone'))
+            or bool(raw.get('is_id'))
+        ):
+            # Names, phone numbers, and identifiers must remain strings so
+            # leading zeroes and formatted values survive edits and exports.
+            field_type = 'text'
+        item['type'] = field_type
         item['required'] = bool(raw.get('required', False))
         item['enabled'] = raw.get('enabled', True) is not False
+        for flag in ('default', 'is_name', 'is_phone', 'is_id'):
+            if flag in raw:
+                item[flag] = bool(raw.get(flag))
+        options_source = str(raw.get('options_source') or '').strip()
+        if options_source in {'company_shifts', 'leave_departments'}:
+            item['options_source'] = options_source
+        options = raw.get('options')
+        if not isinstance(options, list):
+            options = []
+        normalized_options = []
+        seen_options = set()
+        for option in options[:_MAX_REGISTRATION_OPTIONS]:
+            value = str(option or '').strip()[:160]
+            identity = value.casefold()
+            if value and identity not in seen_options:
+                normalized_options.append(value)
+                seen_options.add(identity)
+        item['options'] = normalized_options if field_type in {'select', 'multiselect'} else []
         normalized.append(item)
     return normalized
 
