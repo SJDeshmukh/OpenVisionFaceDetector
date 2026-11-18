@@ -1169,31 +1169,24 @@ html:is(
   animation: authButtonPulse 720ms ease-in-out infinite alternate !important;
 }
 
-/* Branded neon treatment adapted from StealthWorm's Uiverse sign-in button.
-   Scoped to the primary password sign-in action so secondary auth controls
-   retain their existing visual hierarchy. */
+/* TapInX colour adaptation of StealthWorm's MIT-licensed Uiverse neon
+   button: dark core, luminous outline, wide glow and reflected light. */
 .premium-signin-button {
-  --signin-glow: rgba(190, 165, 255, 0.95);
-  --signin-spread: rgba(124, 58, 255, 0.38);
-  --signin-accent: rgba(6, 214, 255, 0.76);
+  --signin-glow: rgb(190, 165, 255);
+  --signin-spread: rgba(124, 58, 255, 0.68);
+  --signin-enhanced-glow: rgb(232, 224, 255);
+  --signin-button-core: rgb(39, 20, 74);
   isolation: isolate;
   overflow: visible;
-  border: 1px solid var(--signin-glow);
-  background:
-    linear-gradient(112deg, #5420ce 0%, #7c3aff 44%, #6740df 70%, #237a9d 100%);
-  background-size: 180% 180%;
-  color: #fff;
-  text-shadow: 0 0 12px rgba(234, 226, 255, 0.52);
+  border: 0.2em solid var(--signin-glow);
+  background: var(--signin-button-core);
+  color: var(--signin-glow);
+  text-shadow: 0 0 0.5em var(--signin-glow);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    inset 0 0 18px rgba(182, 154, 255, 0.18),
-    0 8px 24px rgba(22, 10, 52, 0.36),
-    0 0 18px rgba(124, 58, 255, 0.22);
-  transition:
-    transform 180ms ease,
-    border-color 220ms ease,
-    background-position 500ms ease,
-    box-shadow 220ms ease;
+    0 0 0.85em 0.2em var(--signin-glow),
+    0 0 2.8em 0.85em var(--signin-spread),
+    inset 0 0 0.7em 0.2em var(--signin-glow);
+  transition: color 220ms ease, background-color 220ms ease, box-shadow 220ms ease, transform 180ms ease;
 }
 
 .premium-signin-button__content {
@@ -1205,62 +1198,41 @@ html:is(
   content: '';
   position: absolute;
   z-index: -1;
-  top: calc(100% + 7px);
-  left: 15%;
-  width: 70%;
-  height: 15px;
-  border-radius: 50%;
+  top: 120%;
+  left: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, var(--signin-spread), var(--signin-accent), transparent);
-  filter: blur(12px);
-  opacity: 0.58;
-  transform: perspective(40px) rotateX(58deg) scaleX(0.86);
-  transition: opacity 220ms ease, transform 220ms ease;
+  background: var(--signin-spread);
+  filter: blur(2em);
+  opacity: 0.7;
+  transform: perspective(1.5em) rotateX(35deg) scale(1, 0.6);
+  transition: opacity 220ms ease, transform 220ms ease, background-color 220ms ease;
 }
 
 .premium-signin-button::after {
-  content: '';
-  position: absolute;
-  z-index: 0;
-  inset: 1px;
-  overflow: hidden;
-  border-radius: inherit;
-  pointer-events: none;
-  background: linear-gradient(
-    110deg,
-    transparent 18%,
-    rgba(255, 255, 255, 0.08) 36%,
-    rgba(255, 255, 255, 0.48) 49%,
-    rgba(168, 232, 255, 0.2) 58%,
-    transparent 76%
-  );
-  transform: translate3d(-125%, 0, 0) skewX(-16deg);
-  transition: transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
+  content: none;
 }
 
 .premium-signin-button:hover:not(:disabled) {
   transform: translateY(-1px);
-  border-color: rgba(224, 215, 255, 0.94);
-  background-position: 100% 50%;
+  color: var(--signin-button-core);
+  background: var(--signin-glow);
+  text-shadow: none;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.3),
-    inset 0 0 22px rgba(182, 154, 255, 0.24),
-    0 12px 30px rgba(22, 10, 52, 0.44),
-    0 0 24px var(--signin-spread),
-    0 0 38px rgba(6, 214, 255, 0.13);
+    0 0 0.8em 0.2em var(--signin-glow),
+    0 0 3.5em 1.4em var(--signin-spread),
+    inset 0 0 0.65em 0.2em var(--signin-glow);
 }
 
 .premium-signin-button:hover:not(:disabled)::before {
-  opacity: 0.82;
-  transform: perspective(40px) rotateX(58deg) scaleX(1);
-}
-
-.premium-signin-button:hover:not(:disabled)::after {
-  transform: translate3d(125%, 0, 0) skewX(-16deg);
+  opacity: 0.88;
+  background: var(--signin-glow);
+  transform: perspective(1.5em) rotateX(35deg) scale(1, 0.68);
 }
 
 .premium-signin-button:focus-visible {
-  outline: 2px solid rgba(142, 224, 255, 0.92);
+  outline: 2px solid var(--signin-enhanced-glow);
   outline-offset: 4px;
 }
 
@@ -1268,13 +1240,10 @@ html:is(
   transform: translateY(0) scale(0.985);
 }
 
-.premium-signin-button[data-auth-state="authenticating"]::after {
-  animation: premiumSignInSweep 1.15s ease-in-out infinite;
-}
-
-@keyframes premiumSignInSweep {
-  from { transform: translate3d(-125%, 0, 0) skewX(-16deg); }
-  to { transform: translate3d(125%, 0, 0) skewX(-16deg); }
+.premium-signin-button:disabled {
+  opacity: 0.82;
+  color: var(--signin-enhanced-glow);
+  background: var(--signin-button-core);
 }
 
 .auth-logout-trigger:active {
