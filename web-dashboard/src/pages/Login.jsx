@@ -455,19 +455,19 @@ const Login = () => {
                   custom={2} variants={itemVariants} initial={false} animate="visible"
                   type="submit"
                   disabled={loading || googleLoading || isAuthTransitioning}
+                  aria-busy={loading}
                   data-auth-state={loading ? 'authenticating' : 'idle'}
-                  className="auth-login-trigger premium-signin-button btn-primary w-full py-3.5 rounded-xl text-sm font-semibold tracking-wide mt-1"
+                  className="auth-login-trigger premium-signin-button mt-1"
                 >
-                  <span className="premium-signin-button__content">
-                    {loading ? (
-                      <span className="flex items-center justify-center gap-2">
-                        <span
-                          className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
-                          style={{ animation: 'spin360 0.7s linear infinite' }}
-                        />
-                        Signing in…
-                      </span>
-                    ) : 'Sign In'}
+                  <strong className="premium-signin-button__label">
+                    {loading ? 'SIGNING IN…' : 'SIGN IN'}
+                  </strong>
+                  <span className="premium-signin-button__stars-container" aria-hidden="true">
+                    <span className="premium-signin-button__stars" />
+                  </span>
+                  <span className="premium-signin-button__glow" aria-hidden="true">
+                    <span className="premium-signin-button__glow-circle" />
+                    <span className="premium-signin-button__glow-circle" />
                   </span>
                 </motion.button>
 
