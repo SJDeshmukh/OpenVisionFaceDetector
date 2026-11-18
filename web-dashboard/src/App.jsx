@@ -30,6 +30,7 @@ import HostelAlerts from './pages/HostelAlerts';
 import HostelAllocation from './pages/HostelAllocation';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import WeatherThemeManager from './components/WeatherThemeManager';
+import SessionTransitionLayer from './components/SessionTransitionLayer';
 
 import { usesStudentRecords } from './lib/businessTerminology';
 import { staffCanAccessNav } from './lib/staffNavigation';
@@ -55,7 +56,7 @@ const RootRedirect = () => {
 
 // Protected Route Component
 const ProtectedRoute = ({ allowedRoles }) => {
-  const { user } = useAuth();
+  const { user, entryTransitionPending } = useAuth();
   const location = useLocation();
 
   if (!user) {
@@ -64,6 +65,13 @@ const ProtectedRoute = ({ allowedRoles }) => {
       ? `/login?redirect=${encodeURIComponent(currentTarget)}`
       : '/login';
     return <Navigate to={loginTarget} replace />;
+  }
+
+  // A newly authenticated user remains on the login route until the opening
+  // wave covers the viewport. This guard prevents protected UI from being
+  // exposed if a route changes early (history, deep link, or duplicate event).
+  if (entryTransitionPending) {
+    return <div className="auth-route-guard" aria-hidden="true" />;
   }
 
   if (allowedRoles && !allowedRoles.includes(user.role)) {
@@ -126,6 +134,7 @@ function App() {
       <SocketProvider>
         <BrowserRouter>
           <WeatherThemeManager />
+          <SessionTransitionLayer />
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/privacy-policy" element={<PrivacyPolicy />} />

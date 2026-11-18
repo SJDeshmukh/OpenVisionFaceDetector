@@ -80,7 +80,7 @@ const overlayVariants = {
 
 /* ── Sidebar ── */
 export const Sidebar = ({ isOpen, onClose }) => {
-  const { user, staffSession, logout } = useAuth();
+  const { user, staffSession, logoutWithTransition, isAuthTransitioning } = useAuth();
   const terminology = getBusinessTerminology(user?.vertical);
   const navigate = useNavigate();
   const [liveFeedUnlocked, setLiveFeedUnlocked] = useState(false);
@@ -103,7 +103,9 @@ export const Sidebar = ({ isOpen, onClose }) => {
     return () => window.removeEventListener('keydown', handler);
   }, [user, seqIndex]);
 
-  const handleLogout = () => { logout(); navigate('/login'); };
+  const handleLogout = async () => {
+    await logoutWithTransition(() => navigate('/login', { replace: true }));
+  };
 
   let navItems;
   if (user?.role === 'super_admin') {
@@ -316,7 +318,8 @@ export const Sidebar = ({ isOpen, onClose }) => {
           )}
           <button
             onClick={handleLogout}
-            className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl transition-all duration-200 group"
+            disabled={isAuthTransitioning}
+            className="auth-logout-trigger flex items-center gap-3 w-full px-3 py-2.5 rounded-xl transition-all duration-200 group disabled:cursor-wait"
             style={{ color: 'var(--text-muted)' }}
             onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,59,59,0.08)'; e.currentTarget.style.color = '#FF6B6B'; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}

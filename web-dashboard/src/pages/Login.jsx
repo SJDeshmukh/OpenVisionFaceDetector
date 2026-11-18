@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
@@ -26,6 +26,11 @@ const errorVariants = {
   hidden:  { opacity: 0, y: -8, scale: 0.97 },
   visible: { opacity: 1, y: 0,  scale: 1 },
   exit:    { opacity: 0, scale: 0.97 },
+};
+
+const internalRedirect = (value) => {
+  const target = String(value || '').trim();
+  return target.startsWith('/') && !target.startsWith('//') ? target : null;
 };
 
 const GoogleMark = () => (
@@ -84,6 +89,8 @@ const Login = () => {
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [pinLoading, setPinLoading] = useState(false);
+  const [studentPasswordLoading, setStudentPasswordLoading] = useState(false);
   const [showPasswordChange, setShowPasswordChange] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -94,14 +101,19 @@ const Login = () => {
   const [resetEmail, setResetEmail] = useState('');
   const [resetStatus, setResetStatus] = useState({ type: '', message: '' });
   const [resetting, setResetting] = useState(false);
-  const { user, staffSession, login, googleLogin, logout, loginAsStaff } = useAuth();
+  const authActionInFlightRef = useRef(false);
+  const {
+    user, staffSession, login, googleLogin, logout, loginAsStaff,
+    entryTransitionPending, isAuthTransitioning, completeLoginTransition,
+  } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const redirectTarget = searchParams.get('redirect');
+  const redirectTarget = internalRedirect(searchParams.get('redirect'));
 
   // If already logged in, manage staff PIN verification or auto-forward
   useEffect(() => {
     if (!user) return;
+    if (entryTransitionPending || isAuthTransitioning) return;
 
     const isManagerRole = ['vendor_admin', 'admin', 'owner'].includes(user?.role);
     const hasLeaveManagement = Array.isArray(user?.features) && user.features.includes('leave_management');
@@ -128,70 +140,97 @@ const Login = () => {
     } else {
       navigate('/dashboard', { replace: true });
     }
-  }, [user, staffSession, redirectTarget, navigate, step]);
+  }, [user, staffSession, redirectTarget, navigate, step, entryTransitionPending, isAuthTransitioning]);
+
+  const openAuthenticatedView = async (target) => {
+    await completeLoginTransition(() => navigate(target, { replace: true }));
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (authActionInFlightRef.current) return;
+    authActionInFlightRef.current = true;
     setError('');
     setLoading(true);
-    const result = await login(username, password);
-    setLoading(false);
-    if (result.success) {
-      if (result.role === 'super_admin') { logout(); setError('This account uses a separate sign-in portal.'); return; }
-      if (result.force_password_change) { setShowPasswordChange(true); return; }
-      if (result.status === 'success' && result.needs_student_password) { setShowStudentPasswordModal(true); return; }
-      const storedUser = JSON.parse(localStorage.getItem('user'));
-      const isManagerRole = ['vendor_admin', 'admin', 'owner'].includes(storedUser?.role);
-      const hasLeaveManagement = Array.isArray(storedUser?.features) && storedUser.features.includes('leave_management');
-      if (isManagerRole && hasLeaveManagement) { setStep(1); return; }
-      if (redirectTarget) { navigate(redirectTarget); return; }
-      if (result.role === 'faculty') { navigate('/classes'); return; }
-      if (result.role === 'user' || result.role === 'student') {
-        const vertical = storedUser?.vertical || result.vertical;
-        const isStudent = usesStudentRecords(vertical);
-        if (isStudent) {
-          navigate('/leave-management');
-        } else {
-          navigate('/attendance');
+    try {
+      const result = await login(username, password);
+      if (result.success) {
+        if (result.role === 'super_admin') {
+          await logout();
+          setError('This account uses a separate sign-in portal.');
+          return;
         }
-        return;
+        if (result.force_password_change) {
+          setShowPasswordChange(true);
+          return;
+        }
+        if (result.status === 'success' && result.needs_student_password) {
+          setShowStudentPasswordModal(true);
+          return;
+        }
+        let storedUser = {};
+        try { storedUser = JSON.parse(localStorage.getItem('user') || '{}'); } catch { storedUser = {}; }
+        const isManagerRole = ['vendor_admin', 'admin', 'owner'].includes(storedUser?.role);
+        const hasLeaveManagement = Array.isArray(storedUser?.features) && storedUser.features.includes('leave_management');
+        if (isManagerRole && hasLeaveManagement) {
+          setStep(1);
+          return;
+        }
+        let target = redirectTarget;
+        if (!target && result.role === 'faculty') target = '/classes';
+        if (result.role === 'user' || result.role === 'student') {
+          const vertical = storedUser?.vertical || result.vertical;
+          const isStudent = usesStudentRecords(vertical);
+          if (!target) target = isStudent ? '/leave-management' : '/attendance';
+        }
+        if (!target && result.role === 'owner') target = '/owner/advances';
+        if (!target && result.redirect_url) target = internalRedirect(result.redirect_url);
+        await openAuthenticatedView(target || '/dashboard');
+      } else {
+        setError(result.error);
       }
-      if (result.role === 'owner') { navigate('/owner/advances'); return; }
-      if (result.redirect_url) { navigate(result.redirect_url); return; }
-      navigate('/dashboard');
-    } else {
-      setError(result.error);
+    } finally {
+      authActionInFlightRef.current = false;
+      setLoading(false);
     }
   };
 
   const handleGoogleLogin = async () => {
+    if (authActionInFlightRef.current) return;
+    authActionInFlightRef.current = true;
     setError('');
     setGoogleLoading(true);
-    const result = await googleLogin();
-    setGoogleLoading(false);
-    if (!result.success) {
-      setError(result.error);
-      return;
+    try {
+      const result = await googleLogin();
+      if (!result.success) {
+        setError(result.error);
+        return;
+      }
+      const target = redirectTarget || internalRedirect(result.redirect_url) ||
+        (result.role === 'staff' || result.staff ? '/leave-management' : '/dashboard');
+      await openAuthenticatedView(target);
+    } finally {
+      authActionInFlightRef.current = false;
+      setGoogleLoading(false);
     }
-    if (redirectTarget) {
-      navigate(redirectTarget);
-      return;
-    }
-    navigate(result.redirect_url || (result.role === 'staff' || result.staff ? '/leave-management' : '/dashboard'));
   };
 
   const handlePinSubmit = async (e) => {
     e.preventDefault();
+    if (authActionInFlightRef.current) return;
+    authActionInFlightRef.current = true;
     setError('');
-    const res = await loginAsStaff(pin);
-    if (res.success) {
-      if (redirectTarget) {
-        navigate(redirectTarget);
+    setPinLoading(true);
+    try {
+      const res = await loginAsStaff(pin);
+      if (res.success) {
+        await openAuthenticatedView(redirectTarget || '/leave-management');
       } else {
-        navigate('/leave-management');
+        setError(res.error || 'Invalid PIN');
       }
-    } else {
-      setError(res.error || 'Invalid PIN');
+    } finally {
+      authActionInFlightRef.current = false;
+      setPinLoading(false);
     }
   };
 
@@ -205,7 +244,7 @@ const Login = () => {
       if (res.data.status === 'success') {
         setShowPasswordChange(false);
         alert('Password changed! Please login with your new password.');
-        logout(); setUsername(''); setPassword(''); setStep(0);
+        await logout(); setUsername(''); setPassword(''); setStep(0);
       }
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to change password');
@@ -233,10 +272,23 @@ const Login = () => {
 
   const handleStudentPasswordSubmit = async (e) => {
     e.preventDefault();
+    if (authActionInFlightRef.current) return;
+    authActionInFlightRef.current = true;
     setError('');
-    const result = await login(username, password, studentPassword);
-    if (result.success) { setShowStudentPasswordModal(false); setStudentPassword(''); navigate('/leave-management'); }
-    else setError(result.error || 'Invalid custom password');
+    setStudentPasswordLoading(true);
+    try {
+      const result = await login(username, password, studentPassword);
+      if (result.success) {
+        setShowStudentPasswordModal(false);
+        setStudentPassword('');
+        await openAuthenticatedView('/leave-management');
+      } else {
+        setError(result.error || 'Invalid custom password');
+      }
+    } finally {
+      authActionInFlightRef.current = false;
+      setStudentPasswordLoading(false);
+    }
   };
 
   return (
@@ -402,8 +454,9 @@ const Login = () => {
                 <motion.button
                   custom={2} variants={itemVariants} initial={false} animate="visible"
                   type="submit"
-                  disabled={loading}
-                  className="btn-primary w-full py-3.5 rounded-xl text-sm font-semibold tracking-wide mt-1"
+                  disabled={loading || googleLoading || isAuthTransitioning}
+                  data-auth-state={loading ? 'authenticating' : 'idle'}
+                  className="auth-login-trigger btn-primary w-full py-3.5 rounded-xl text-sm font-semibold tracking-wide mt-1"
                 >
                   {loading ? (
                     <span className="flex items-center justify-center gap-2">
@@ -429,8 +482,9 @@ const Login = () => {
                   custom={4} variants={itemVariants} initial={false} animate="visible"
                   type="button"
                   onClick={handleGoogleLogin}
-                  disabled={loading || googleLoading}
-                  className="w-full py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-3 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed"
+                  disabled={loading || googleLoading || isAuthTransitioning}
+                  data-auth-state={googleLoading ? 'authenticating' : 'idle'}
+                  className="auth-login-trigger w-full py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-3 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed"
                   style={{
                     background: '#fff',
                     color: '#1F1F1F',
@@ -497,14 +551,19 @@ const Login = () => {
                 <div className="space-y-2">
                   <button
                     type="submit"
-                    disabled={pin.length < 4}
-                    className="btn-primary w-full py-3.5 rounded-xl text-sm font-semibold"
+                    disabled={pin.length < 4 || pinLoading || isAuthTransitioning}
+                    data-auth-state={pinLoading ? 'authenticating' : 'idle'}
+                    className="auth-login-trigger btn-primary w-full py-3.5 rounded-xl text-sm font-semibold"
                   >
-                    Verify PIN
+                    {pinLoading ? 'Verifying…' : 'Verify PIN'}
                   </button>
                   <button
                     type="button"
-                    onClick={() => { logout(); setStep(0); setPin(''); }}
+                    disabled={pinLoading || isAuthTransitioning}
+                    onClick={async () => {
+                      const result = await logout();
+                      if (result.success) { setStep(0); setPin(''); }
+                    }}
                     className="w-full py-1.5 text-xs font-medium transition-colors"
                     style={{ color: '#888C92' }}
                     onMouseEnter={e => e.currentTarget.style.color = '#FF7070'}
@@ -706,11 +765,17 @@ const Login = () => {
                     placeholder="Enter your set password"
                   />
                 </div>
-                <button type="submit" className="btn-primary w-full py-3.5 rounded-xl text-sm font-semibold">
-                  Verify & Login
+                <button
+                  type="submit"
+                  disabled={studentPasswordLoading || isAuthTransitioning}
+                  data-auth-state={studentPasswordLoading ? 'authenticating' : 'idle'}
+                  className="auth-login-trigger btn-primary w-full py-3.5 rounded-xl text-sm font-semibold disabled:opacity-60"
+                >
+                  {studentPasswordLoading ? 'Verifying…' : 'Verify & Login'}
                 </button>
                 <button
                   type="button"
+                  disabled={studentPasswordLoading || isAuthTransitioning}
                   onClick={() => setShowStudentPasswordModal(false)}
                   className="w-full py-2.5 text-sm font-medium transition-colors duration-200"
                   style={{ color: '#888C92' }}

@@ -458,7 +458,8 @@ const LeaveManagement = () => {
     try {
       await axios.post(`${API_URL}/auth/student/reset-to-default`, {});
       alert("Password reset successfully! Please login again with your mobile number.");
-      logout();
+      const result = await logout();
+      if (!result.success) throw new Error(result.error || 'Unable to close the current session');
     } catch (err) {
       alert("Error resetting password: " + (err.response?.data?.error || err.message));
     }

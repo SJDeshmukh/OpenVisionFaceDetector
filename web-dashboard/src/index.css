@@ -949,6 +949,376 @@
   .app-shell::before { animation: none; }
 }
 
+/* Secure session transitions ------------------------------------------------
+   Authentication completes before OPENING begins. Logout revocation starts
+   immediately while CLOSING runs, and protected state is cleared only after
+   the server confirms that the session is no longer active. */
+.auth-route-guard {
+  min-height: 100vh;
+  background: #03090b;
+}
+
+.session-transition-layer {
+  position: fixed;
+  z-index: 12000;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: all;
+  isolation: isolate;
+  cursor: wait;
+  contain: layout paint;
+  background: rgba(2, 8, 10, 0.08);
+  will-change: opacity, background-color;
+}
+
+.session-transition__ambient,
+.session-transition__wave,
+.session-transition__rim,
+.session-transition__brand {
+  position: absolute;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+.session-transition__ambient {
+  z-index: 0;
+  inset: 0;
+  opacity: 0;
+  background:
+    radial-gradient(circle at 50% 72%, rgba(124, 58, 255, 0.24), transparent 36%),
+    rgba(1, 7, 9, 0.72);
+}
+
+.session-transition__wave,
+.session-transition__rim {
+  z-index: 1;
+  left: 50%;
+  bottom: -44vmax;
+  width: max(88vmax, 900px);
+  aspect-ratio: 1;
+  border-radius: 46% 54% 58% 42% / 54% 44% 56% 46%;
+  transform: translate3d(-50%, 52%, 0) rotate(-8deg) scale(0.025);
+  transform-origin: 50% 50%;
+}
+
+.session-transition__wave {
+  background:
+    radial-gradient(circle at 46% 35%, rgba(128, 237, 226, 0.18), transparent 28%),
+    linear-gradient(142deg, #06161a 4%, #102126 42%, #251451 74%, #070d11 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(191, 170, 255, 0.2),
+    0 0 70px rgba(124, 58, 255, 0.32),
+    0 0 22px rgba(128, 237, 226, 0.2);
+}
+
+.session-transition__rim {
+  z-index: 2;
+  border: 2px solid rgba(182, 154, 255, 0.64);
+  box-shadow: 0 0 28px rgba(128, 237, 226, 0.34);
+  opacity: 0;
+}
+
+.session-transition__brand {
+  z-index: 3;
+  left: 50%;
+  top: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: rgba(247, 247, 248, 0.84);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0;
+  transform: translate3d(-50%, -42%, 0) scale(0.96);
+}
+
+.session-transition__logo {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  place-items: center;
+  padding: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 18px;
+  background: rgba(4, 10, 13, 0.72);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.34);
+}
+
+.session-transition__logo svg,
+.session-transition__logo img {
+  width: 100%;
+  height: 100%;
+}
+
+/* OPENING: 0–300 ms button/ambient response, 300–900 ms liquid flood. */
+.session-transition--login.phase-opening .session-transition__ambient {
+  animation: authLoginDim 900ms ease-out both;
+}
+
+.session-transition--login.phase-opening .session-transition__wave {
+  animation: authWaveOpen 600ms cubic-bezier(0.42, 0, 0.16, 1) 300ms both;
+}
+
+.session-transition--login.phase-opening .session-transition__rim {
+  animation: authRimOpen 600ms cubic-bezier(0.42, 0, 0.16, 1) 300ms both;
+}
+
+.session-transition--login.phase-opening .session-transition__brand {
+  animation: authBrandIn 480ms ease-out 410ms both;
+}
+
+/* REVEALING: dashboard is mounted under a fully covered frame, then exposed. */
+.session-transition--login.phase-revealing {
+  background: #071115;
+  animation: authOverlayReveal 600ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.session-transition--login.phase-revealing .session-transition__ambient {
+  opacity: 1;
+}
+
+.session-transition--login.phase-revealing :is(.session-transition__wave, .session-transition__rim) {
+  opacity: 1;
+  transform: translate3d(-50%, 52%, 0) rotate(2deg) scale(3.1);
+}
+
+.session-transition--login.phase-revealing .session-transition__brand {
+  animation: authBrandOut 260ms ease-in both;
+}
+
+/* CLOSING/TRANSITIONING mirrors OPENING. The server request is already active. */
+.session-transition--logout:is(.phase-closing, .phase-transitioning) .session-transition__ambient {
+  animation: authLogoutDim 900ms ease-out both;
+}
+
+.session-transition--logout:is(.phase-closing, .phase-transitioning) .session-transition__wave {
+  animation: authWaveClose 500ms cubic-bezier(0.5, 0, 0.14, 1) 350ms both;
+}
+
+.session-transition--logout:is(.phase-closing, .phase-transitioning) .session-transition__rim {
+  animation: authRimClose 500ms cubic-bezier(0.5, 0, 0.14, 1) 350ms both;
+}
+
+.session-transition--logout:is(.phase-closing, .phase-transitioning) .session-transition__brand {
+  animation: authBrandIn 420ms ease-out 460ms both;
+}
+
+.session-transition--logout.phase-logged-out {
+  background: #071115;
+  animation: authLoggedOutReveal 200ms ease-out both;
+}
+
+.session-transition--logout.phase-logged-out .session-transition__ambient {
+  opacity: 1;
+}
+
+.session-transition--logout.phase-logged-out :is(.session-transition__wave, .session-transition__rim) {
+  opacity: 1;
+  transform: translate3d(-50%, 52%, 0) rotate(2deg) scale(3.1);
+}
+
+.session-transition--logout.phase-restore {
+  animation: authTransitionRestore 200ms ease-out both;
+}
+
+/* Authenticated shell choreography: header, sidebar, then page content. */
+html[data-session-transition="login-revealing"] .app-shell {
+  animation: authShellReveal 600ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+html[data-session-transition="login-revealing"] header {
+  animation: authHeaderReveal 300ms ease-out both;
+}
+
+html[data-session-transition="login-revealing"] .app-content {
+  animation: authContentReveal 420ms cubic-bezier(0.22, 1, 0.36, 1) 150ms both;
+}
+
+html:is(
+  [data-session-transition="logout-closing"],
+  [data-session-transition="logout-transitioning"]
+) .app-shell {
+  pointer-events: none;
+  animation: authShellClose 900ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+html:is(
+  [data-session-transition="logout-closing"],
+  [data-session-transition="logout-transitioning"]
+) header {
+  animation: authHeaderClose 350ms ease-in 480ms both;
+}
+
+@media (min-width: 1024px) {
+  html[data-session-transition="login-revealing"] aside {
+    animation: authSidebarReveal 430ms cubic-bezier(0.22, 1, 0.36, 1) 90ms both;
+  }
+
+  html:is(
+    [data-session-transition="logout-closing"],
+    [data-session-transition="logout-transitioning"]
+  ) aside {
+    animation: authSidebarClose 500ms ease-in 360ms both;
+  }
+}
+
+.auth-login-trigger[data-auth-state="authenticating"] {
+  animation: authButtonPulse 720ms ease-in-out infinite alternate !important;
+}
+
+.auth-logout-trigger:active {
+  transform: scale(0.97);
+}
+
+.auth-session-notice {
+  position: fixed;
+  z-index: 12100;
+  right: 20px;
+  bottom: 20px;
+  display: flex;
+  width: min(430px, calc(100vw - 32px));
+  align-items: center;
+  gap: 11px;
+  padding: 14px 14px 14px 16px;
+  color: #ffd4d4;
+  border: 1px solid rgba(255, 107, 107, 0.3);
+  border-radius: 16px;
+  background: rgba(39, 12, 17, 0.96);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.42);
+  animation: authNoticeIn 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.auth-session-notice span { flex: 1; font-size: 13px; font-weight: 600; }
+.auth-session-notice button { padding: 5px; color: #ffaaaa; border-radius: 8px; }
+.auth-session-notice button:hover { background: rgba(255, 255, 255, 0.08); }
+
+@keyframes authLoginDim {
+  0% { opacity: 0; }
+  33% { opacity: 0.34; }
+  100% { opacity: 1; }
+}
+
+@keyframes authWaveOpen {
+  0% { opacity: 0; transform: translate3d(-50%, 52%, 0) rotate(-8deg) scale(0.025); }
+  28% { opacity: 1; }
+  62% { border-radius: 53% 47% 43% 57% / 45% 57% 43% 55%; }
+  100% { opacity: 1; transform: translate3d(-50%, 52%, 0) rotate(2deg) scale(3.1); }
+}
+
+@keyframes authRimOpen {
+  0% { opacity: 0; transform: translate3d(-50%, 52%, 0) rotate(-8deg) scale(0.025); }
+  34% { opacity: 0.88; }
+  82% { opacity: 0.38; }
+  100% { opacity: 0; transform: translate3d(-50%, 52%, 0) rotate(2deg) scale(3.12); }
+}
+
+@keyframes authLogoutDim {
+  0% { opacity: 0; }
+  22% { opacity: 0.16; }
+  48% { opacity: 0.48; }
+  100% { opacity: 1; }
+}
+
+@keyframes authWaveClose {
+  0% { opacity: 0; transform: translate3d(-50%, 52%, 0) rotate(8deg) scale(0.025); }
+  24% { opacity: 1; }
+  58% { border-radius: 55% 45% 48% 52% / 43% 58% 42% 57%; }
+  100% { opacity: 1; transform: translate3d(-50%, 52%, 0) rotate(-2deg) scale(3.1); }
+}
+
+@keyframes authRimClose {
+  0% { opacity: 0; transform: translate3d(-50%, 52%, 0) rotate(8deg) scale(0.025); }
+  36% { opacity: 0.82; }
+  100% { opacity: 0; transform: translate3d(-50%, 52%, 0) rotate(-2deg) scale(3.12); }
+}
+
+@keyframes authBrandIn {
+  from { opacity: 0; transform: translate3d(-50%, -38%, 0) scale(0.96); }
+  to { opacity: 1; transform: translate3d(-50%, -50%, 0) scale(1); }
+}
+
+@keyframes authBrandOut {
+  from { opacity: 1; transform: translate3d(-50%, -50%, 0) scale(1); }
+  to { opacity: 0; transform: translate3d(-50%, -56%, 0) scale(0.98); }
+}
+
+@keyframes authOverlayReveal { from { opacity: 1; } to { opacity: 0; } }
+@keyframes authLoggedOutReveal { from { opacity: 1; } to { opacity: 0; } }
+@keyframes authTransitionRestore { from { opacity: 0.82; } to { opacity: 0; } }
+
+@keyframes authShellReveal {
+  from { opacity: 0; transform: scale(0.985); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes authHeaderReveal {
+  from { opacity: 0; transform: translate3d(0, -10px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes authSidebarReveal {
+  from { opacity: 0; transform: translate3d(-18px, 0, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes authContentReveal {
+  from { opacity: 0; transform: translate3d(0, 10px, 0) scale(0.992); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes authShellClose {
+  0%, 20% { opacity: 1; transform: scale(1); }
+  45% { opacity: 0.82; transform: scale(0.985); }
+  100% { opacity: 0; transform: scale(0.97); }
+}
+
+@keyframes authSidebarClose {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0; transform: translate3d(-18px, 0, 0); }
+}
+
+@keyframes authHeaderClose {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0; transform: translate3d(0, -8px, 0); }
+}
+
+@keyframes authButtonPulse {
+  from { transform: scale(1); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28), 0 0 0 rgba(124, 58, 255, 0); }
+  to { transform: scale(0.995); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.34), 0 0 26px rgba(124, 58, 255, 0.36); }
+}
+
+@keyframes authNoticeIn {
+  from { opacity: 0; transform: translate3d(0, 12px, 0) scale(0.98); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@media (max-width: 640px) {
+  .session-transition__wave,
+  .session-transition__rim {
+    bottom: -28vmax;
+    width: max(108vmax, 720px);
+  }
+  .session-transition__brand { font-size: 10px; }
+  .auth-session-notice { right: 16px; bottom: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-login-trigger,
+  .auth-logout-trigger,
+  .session-transition-layer *,
+  html[data-session-transition] :is(.app-shell, aside, header, .app-content) {
+    animation: none !important;
+    transition: none !important;
+  }
+  .session-transition-layer { background: #071115 !important; }
+  .session-transition--login.phase-revealing,
+  .session-transition--logout.phase-logged-out,
+  .session-transition--logout.phase-restore { opacity: 0; }
+}
+
 /* Weather-based seasonal atmosphere ------------------------------------
    These tokens layer over the existing Day/Night system. Removing the
    data-weather-theme attribute restores the original palette verbatim. */

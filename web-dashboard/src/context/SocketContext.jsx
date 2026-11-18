@@ -40,8 +40,9 @@ export const SocketProvider = ({ children }) => {
       if (userRole === 'vendor' || userRole === 'vendor_admin' || userRole === 'admin') {
         if (String(data.vendor_id) === String(vendorId)) {
           console.log("Force logout received via Socket.IO:", data.reason);
-          logout();
-          window.location.href = '/login';
+          void logout({ serverAlreadyRevoked: true }).finally(() => {
+            window.location.assign('/login');
+          });
         }
       }
     });
@@ -50,8 +51,9 @@ export const SocketProvider = ({ children }) => {
       if (userRole === 'vendor' || userRole === 'vendor_admin' || userRole === 'admin') {
         if (String(data.vendor_id) === String(vendorId)) {
           console.log("Force logout (web) via Socket.IO:", data.reason);
-          logout();
-          window.location.href = '/login';
+          void logout({ serverAlreadyRevoked: true }).finally(() => {
+            window.location.assign('/login');
+          });
         }
       }
     });

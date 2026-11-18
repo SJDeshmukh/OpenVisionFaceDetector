@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { API_URL } from '../config';
 import PageLoader from '../components/PageLoader';
@@ -7,6 +7,13 @@ axios.defaults.withCredentials = true;
 
 const AuthContext = createContext();
 const STAFF_HEADER = 'X-Leave-Staff-Token';
+const IDLE_TRANSITION = Object.freeze({ active: false, kind: null, phase: 'idle' });
+
+const wait = (duration) => new Promise(resolve => window.setTimeout(resolve, duration));
+
+const reducedMotionPreferred = () => (
+  typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+);
 
 const applyStaffSession = (staff) => {
   if (staff?.access_token) {
@@ -57,6 +64,12 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [staffSession, setStaffSession] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [entryTransitionPending, setEntryTransitionPending] = useState(false);
+  const [sessionTransition, setSessionTransition] = useState(IDLE_TRANSITION);
+  const [authNotice, setAuthNotice] = useState(null);
+  const transitionLockRef = useRef(false);
+  const logoutTransitionActiveRef = useRef(false);
+  const logoutRequestRef = useRef(null);
 
   const clearSensitiveCaches = useCallback(() => {
     for (const key of Object.keys(localStorage)) {
@@ -70,25 +83,127 @@ export const AuthProvider = ({ children }) => {
       .forEach((key) => localStorage.removeItem(key));
   }, []);
 
-  const logout = useCallback(() => {
-    const deviceId = localStorage.getItem('web_device_id');
-    axios.post(`${API_URL}/auth/logout`, { device_id: deviceId }).catch(() => {});
+  const clearLocalSession = useCallback(async () => {
     setUser(null);
     setStaffSession(null);
+    setEntryTransitionPending(false);
     localStorage.removeItem('user');
     localStorage.removeItem('staffSession');
     clearSensitiveCaches();
     delete axios.defaults.headers.common.Authorization;
     applyStaffSession(null);
-    signOutFirebase();
+    await signOutFirebase();
   }, [clearSensitiveCaches]);
+
+  const requestServerLogout = useCallback(() => {
+    if (logoutRequestRef.current) return logoutRequestRef.current;
+    const deviceId = localStorage.getItem('web_device_id');
+    const request = axios.post(`${API_URL}/auth/logout`, { device_id: deviceId })
+      .then(() => ({ success: true }))
+      .catch((error) => {
+        // A rejected/missing session is already unusable, which is a safe
+        // terminal state for logout. Network and 5xx failures keep local state.
+        const responseMessage = String(error.response?.data?.error || '').toLowerCase();
+        const alreadyLoggedOut = error.response?.status === 401 ||
+          (error.response?.status === 400 && responseMessage.includes('token or credentials required'));
+        if (alreadyLoggedOut) return { success: true };
+        return {
+          success: false,
+          error: error.response?.data?.error || 'Could not securely sign out. Check your connection and try again.',
+        };
+      })
+      .finally(() => {
+        logoutRequestRef.current = null;
+      });
+    logoutRequestRef.current = request;
+    return request;
+  }, []);
+
+  const logout = useCallback(async ({ serverAlreadyRevoked = false } = {}) => {
+    const result = serverAlreadyRevoked ? { success: true } : await requestServerLogout();
+    if (!result.success) {
+      setAuthNotice({ type: 'error', message: result.error });
+      return result;
+    }
+    await clearLocalSession();
+    return { success: true };
+  }, [clearLocalSession, requestServerLogout]);
+
+  const completeLoginTransition = useCallback(async (showAuthenticatedView) => {
+    if (transitionLockRef.current) return { success: false, busy: true };
+    transitionLockRef.current = true;
+    setAuthNotice(null);
+    const reducedMotion = reducedMotionPreferred();
+    try {
+      setSessionTransition({ active: true, kind: 'login', phase: 'opening' });
+      await wait(reducedMotion ? 0 : 900);
+
+      // The wave fully covers the viewport before protected routes can render.
+      setEntryTransitionPending(false);
+      setSessionTransition({ active: true, kind: 'login', phase: 'revealing' });
+      await showAuthenticatedView?.();
+      await wait(reducedMotion ? 0 : 600);
+      setSessionTransition(IDLE_TRANSITION);
+      return { success: true };
+    } finally {
+      transitionLockRef.current = false;
+    }
+  }, []);
+
+  const logoutWithTransition = useCallback(async (showLoginView) => {
+    if (transitionLockRef.current) return { success: false, busy: true };
+    transitionLockRef.current = true;
+    setAuthNotice(null);
+    const reducedMotion = reducedMotionPreferred();
+    const startedAt = performance.now();
+    let transitioningTimer;
+    logoutTransitionActiveRef.current = true;
+    try {
+      setSessionTransition({ active: true, kind: 'logout', phase: 'closing' });
+      if (reducedMotion) {
+        setSessionTransition({ active: true, kind: 'logout', phase: 'transitioning' });
+      } else {
+        transitioningTimer = window.setTimeout(() => {
+          setSessionTransition({ active: true, kind: 'logout', phase: 'transitioning' });
+        }, 400);
+      }
+      const result = await requestServerLogout();
+      if (!result.success) {
+        window.clearTimeout(transitioningTimer);
+        setSessionTransition({ active: true, kind: 'logout', phase: 'restore' });
+        await wait(reducedMotion ? 0 : 200);
+        setSessionTransition(IDLE_TRANSITION);
+        setAuthNotice({ type: 'error', message: result.error });
+        return result;
+      }
+
+      const elapsed = performance.now() - startedAt;
+      await wait(reducedMotion ? 0 : Math.max(0, 900 - elapsed));
+      await clearLocalSession();
+      setSessionTransition({ active: true, kind: 'logout', phase: 'logged-out' });
+      await showLoginView?.();
+      await wait(reducedMotion ? 0 : 200);
+      setSessionTransition(IDLE_TRANSITION);
+      return { success: true };
+    } finally {
+      window.clearTimeout(transitioningTimer);
+      logoutTransitionActiveRef.current = false;
+      transitionLockRef.current = false;
+    }
+  }, [clearLocalSession, requestServerLogout]);
+
+  useEffect(() => {
+    if (!authNotice) return undefined;
+    const timeout = window.setTimeout(() => setAuthNotice(null), 6000);
+    return () => window.clearTimeout(timeout);
+  }, [authNotice]);
 
   const refreshUserData = useCallback(async () => {
     try {
       const { data } = await axios.get(`${API_URL}/auth/me`);
       if (!data) return null;
       if (data.web_login_enabled === 0 && data.role !== 'super_admin') {
-        logout();
+        await logout();
         return null;
       }
       setUser((previous) => {
@@ -123,9 +238,19 @@ export const AuthProvider = ({ children }) => {
         const suspended = message.includes('Subscription Expired') ||
           message.includes('Account Suspended') || message.includes('Service Suspended');
         const featureMissing = message.includes('Feature') && message.includes('not enabled');
-        if (isSessionUnauthorized(error) || (status === 403 && suspended)) {
-          logout();
-          if (window.location.pathname !== '/login') window.location.assign('/login');
+        if (isSessionUnauthorized(error) && logoutTransitionActiveRef.current) {
+          // The explicit logout flow already revoked the server session and is
+          // intentionally holding the covered application until its 900 ms mark.
+        } else if (isSessionUnauthorized(error)) {
+          // The backend has already rejected this session. Clear the local view
+          // without sending another logout request, then leave protected routes.
+          void logout({ serverAlreadyRevoked: true }).finally(() => {
+            if (window.location.pathname !== '/login') window.location.assign('/login');
+          });
+        } else if (status === 403 && suspended) {
+          void logout().then((result) => {
+            if (result.success && window.location.pathname !== '/login') window.location.assign('/login');
+          });
         } else if (status === 403 && featureMissing) {
           refreshUserData().catch(() => {});
         }
@@ -253,6 +378,7 @@ export const AuthProvider = ({ children }) => {
         vendor_config: response.data.vendor_config, features: response.data.features || [],
         vertical: response.data.vertical, person_id: response.data.person_id,
       });
+      setEntryTransitionPending(true);
       setUser(userData);
       localStorage.setItem('user', JSON.stringify(userData));
       setStaffSession(null);
@@ -290,6 +416,7 @@ export const AuthProvider = ({ children }) => {
         throw new Error(data?.error || 'Google sign-in failed');
       }
 
+      setEntryTransitionPending(true);
       const staff = data.staff_session || null;
       setStaffSession(staff);
       if (staff?.access_token) localStorage.setItem('staffSession', JSON.stringify(staff));
@@ -306,6 +433,7 @@ export const AuthProvider = ({ children }) => {
         redirect_url: data.redirect_url,
       };
     } catch (error) {
+      setEntryTransitionPending(false);
       applyStaffSession(null);
       setStaffSession(null);
       localStorage.removeItem('staffSession');
@@ -350,6 +478,9 @@ export const AuthProvider = ({ children }) => {
     <AuthContext.Provider value={{
       user, staffSession, login, googleLogin, logout, loginAsStaff, logoutStaff,
       loading, refreshFeatures: refreshUserData, refreshUserData,
+      entryTransitionPending, sessionTransition,
+      isAuthTransitioning: sessionTransition.active,
+      completeLoginTransition, logoutWithTransition, authNotice, setAuthNotice,
     }}>
       {loading
         ? <PageLoader fullScreen label="Opening TapInX" description="Restoring your secure workspace…" />

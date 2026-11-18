@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Lock } from 'lucide-react';
@@ -8,22 +8,32 @@ const SuperAdminLogin = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const { login, logout } = useAuth();
+  const [loading, setLoading] = useState(false);
+  const loginInFlightRef = useRef(false);
+  const { login, logout, completeLoginTransition, isAuthTransitioning } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (loginInFlightRef.current) return;
+    loginInFlightRef.current = true;
+    setLoading(true);
     setError('');
-    const result = await login(username, password);
-    if (result.success) {
-      if (result.role !== 'super_admin') {
-        logout();
-        setError('Access Denied. You are not a Super Admin.');
-        return;
+    try {
+      const result = await login(username, password);
+      if (result.success) {
+        if (result.role !== 'super_admin') {
+          await logout();
+          setError('Access Denied. You are not a Super Admin.');
+          return;
+        }
+        await completeLoginTransition(() => navigate('/admin/vendors', { replace: true }));
+      } else {
+        setError(result.error);
       }
-      navigate('/admin/vendors');
-    } else {
-      setError(result.error);
+    } finally {
+      loginInFlightRef.current = false;
+      setLoading(false);
     }
   };
 
@@ -94,9 +104,11 @@ const SuperAdminLogin = () => {
 
             <button
               type="submit"
-              className="btn-primary w-full text-white font-semibold py-3 px-4 rounded-xl"
+              disabled={loading || isAuthTransitioning}
+              data-auth-state={loading ? 'authenticating' : 'idle'}
+              className="auth-login-trigger btn-primary w-full text-white font-semibold py-3 px-4 rounded-xl disabled:opacity-60"
             >
-              Authenticate
+              {loading ? 'Authenticating…' : 'Authenticate'}
             </button>
           </form>
         </div>

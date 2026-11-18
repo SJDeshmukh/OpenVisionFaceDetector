@@ -13,7 +13,7 @@ import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
 const Recharge = () => {
-  const { logout } = useAuth();
+  const { logout, logoutWithTransition, isAuthTransitioning } = useAuth();
   const navigate = useNavigate();
   const [subscription, setSubscription] = useState(null);
   
@@ -24,7 +24,7 @@ const Recharge = () => {
       .catch(err => {
           console.error("Error fetching subscription:", err);
           if (err.response?.status === 401) {
-              logout();
+              void logout({ serverAlreadyRevoked: true });
           }
       });
   }, [logout]);
@@ -44,8 +44,9 @@ const Recharge = () => {
                 </div>
             </div>
             <button 
-                onClick={logout}
-                className="flex items-center gap-2 px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                onClick={() => logoutWithTransition(() => navigate('/login', { replace: true }))}
+                disabled={isAuthTransitioning}
+                className="auth-logout-trigger flex items-center gap-2 px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors disabled:cursor-wait"
             >
                 <LogOut size={20} />
                 Logout
