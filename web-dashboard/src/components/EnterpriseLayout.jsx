@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Users, ClipboardList, Video, FileText, Settings,
   Shield, Bell, LogOut, CalendarClock, DollarSign, Activity,
-  Menu, X, FileCheck, Zap, ChevronRight, Moon, Sun, Building2, GraduationCap
+  Menu, X, FileCheck, Zap, ChevronRight, Building2, GraduationCap
 } from 'lucide-react';
 import { Image as ImageIcon } from 'lucide-react';
 import BrandLogo from './BrandLogo';
@@ -386,16 +386,42 @@ export const Topbar = ({ onToggleSidebar }) => {
           />
         </button>
 
-        {/* Theme Toggle */}
-        <button
-          onClick={toggleTheme}
-          className="relative p-2.5 rounded-xl transition-all duration-200"
-          style={{ color: 'var(--text-muted)', background: 'var(--bg-btn-ghost)' }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost-hover)'; e.currentTarget.style.color = 'var(--text-muted-hover)'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+        {/* Animated day/night theme switch, adapted from Galahhad's Uiverse switch. */}
+        <label
+          className="theme-switch"
+          title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
         >
-          {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-        </button>
+          <input
+            type="checkbox"
+            className="theme-switch__checkbox"
+            checked={theme === 'dark'}
+            onChange={toggleTheme}
+            role="switch"
+            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          />
+          <span className="theme-switch__container" aria-hidden="true">
+            <span className="theme-switch__clouds" />
+            <span className="theme-switch__stars-container">
+              <svg viewBox="0 0 52 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5 1L6.1 4.1L9 5.2L6.1 6.3L5 9.4L3.9 6.3L1 5.2L3.9 4.1L5 1Z" fill="currentColor" />
+                <path d="M23 3L23.8 5.2L26 6L23.8 6.8L23 9L22.2 6.8L20 6L22.2 5.2L23 3Z" fill="currentColor" />
+                <path d="M42 1L43.2 4.2L46 5.3L43.2 6.4L42 9.5L40.8 6.4L38 5.3L40.8 4.2L42 1Z" fill="currentColor" />
+                <path d="M14 15L14.8 17.1L17 18L14.8 18.9L14 21L13.2 18.9L11 18L13.2 17.1L14 15Z" fill="currentColor" />
+                <path d="M34 13L35 15.7L37.5 16.7L35 17.7L34 20.4L33 17.7L30.5 16.7L33 15.7L34 13Z" fill="currentColor" />
+                <circle cx="50" cy="14" r="1.5" fill="currentColor" />
+              </svg>
+            </span>
+            <span className="theme-switch__circle-container">
+              <span className="theme-switch__sun-moon-container">
+                <span className="theme-switch__moon">
+                  <span className="theme-switch__spot" />
+                  <span className="theme-switch__spot" />
+                  <span className="theme-switch__spot" />
+                </span>
+              </span>
+            </span>
+          </span>
+        </label>
 
         {/* Divider */}
         <div className="w-px h-6 hidden sm:block" style={{ background: 'var(--border-top)' }} />
