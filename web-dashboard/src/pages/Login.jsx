@@ -456,17 +456,19 @@ const Login = () => {
                   type="submit"
                   disabled={loading || googleLoading || isAuthTransitioning}
                   data-auth-state={loading ? 'authenticating' : 'idle'}
-                  className="auth-login-trigger btn-primary w-full py-3.5 rounded-xl text-sm font-semibold tracking-wide mt-1"
+                  className="auth-login-trigger premium-signin-button btn-primary w-full py-3.5 rounded-xl text-sm font-semibold tracking-wide mt-1"
                 >
-                  {loading ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <span
-                        className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
-                        style={{ animation: 'spin360 0.7s linear infinite' }}
-                      />
-                      Signing in…
-                    </span>
-                  ) : 'Sign In'}
+                  <span className="premium-signin-button__content">
+                    {loading ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <span
+                          className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
+                          style={{ animation: 'spin360 0.7s linear infinite' }}
+                        />
+                        Signing in…
+                      </span>
+                    ) : 'Sign In'}
+                  </span>
                 </motion.button>
 
                 <motion.div
