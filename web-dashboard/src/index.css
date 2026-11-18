@@ -648,7 +648,9 @@
 }
 
 .app-content > * {
-  animation: pageReveal 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* Do not retain the animation's transform after entry. A retained transform
+     makes fixed dialogs position against a long page instead of the viewport. */
+  animation: pageReveal 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .app-content h1 {
