@@ -1540,22 +1540,6 @@ const People = () => {
     return Array.from(set).sort();
   }, [users]);
 
-  const getColumnUniqueValues = (fieldKey) => {
-    const set = new Set();
-    users.forEach(u => {
-      let val = null;
-      if (fieldKey === '__name') val = u.name;
-      else if (fieldKey === '__status') val = u.student_status || 'active';
-      else val = getCellValue(u, fieldKey);
-      if (val && val !== '-' && typeof val === 'string' && val.trim()) {
-        set.add(val.trim());
-      } else if (typeof val === 'number') {
-        set.add(String(val));
-      }
-    });
-    return Array.from(set).sort().slice(0, 30);
-  };
-
   const isAnyFilterActive = selectedDeptFilter !== 'all' || selectedGroupFilter !== 'all' || selectedBatchFilter !== 'all' || faceFilter !== 'all' || parentFilter !== 'all' || Object.values(columnFilters).some(v => Boolean(v)) || Boolean(searchTerm);
 
   const handleClearFilters = () => {
@@ -1651,17 +1635,21 @@ const People = () => {
       result = result.filter(u => {
         return activeColFilters.every(([colField, filterVal]) => {
           const search = String(filterVal).trim().toLowerCase();
+          const words = search.split(/\s+/).filter(Boolean);
+          const containsEveryWord = (value) => {
+            const normalized = String(value || '').toLowerCase();
+            return words.every(word => normalized.includes(word));
+          };
           if (colField === '__name') {
-            return (u.name || '').toLowerCase().includes(search);
+            return containsEveryWord(u.name);
           }
           if (colField === '__status') {
             const s = (u.student_status || 'active').toLowerCase();
             const h = (u.hostel_status || '').toLowerCase();
-            if (search === 'left_hostel') return h === 'left_hostel' || s === 'left_hostel';
-            return s.includes(search);
+            return containsEveryWord(`${s} ${h}`);
           }
           const val = getCellValue(u, colField);
-          return String(val).toLowerCase().includes(search);
+          return containsEveryWord(val);
         });
       });
     }
@@ -1701,7 +1689,7 @@ const People = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [users, searchTerm, selectedClassForView, statusFilter, isHostel, selectedDeptFilter, selectedGroupFilter, selectedBatchFilter, faceFilter, parentFilter, columnFilters, registrationColumns]);
 
-  const renderHeaderWithFilter = (title, fieldKey, uniqueVals = []) => {
+  const renderHeaderWithFilter = (title, fieldKey) => {
     const isFiltered = Boolean(columnFilters[fieldKey]);
     const isOpen = activeHeaderFilterCol === fieldKey;
     const isRightAligned = fieldKey === '__status' || fieldKey === 'actions';
@@ -1753,7 +1741,7 @@ const People = () => {
               <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
-                placeholder={`Search ${title}...`}
+                placeholder={`Type words for ${title}...`}
                 value={columnFilters[fieldKey] || ''}
                 onChange={(e) => {
                   const val = e.target.value;
@@ -1766,46 +1754,9 @@ const People = () => {
                 autoFocus
               />
             </div>
-
-            {uniqueVals.length > 0 && (
-              <div className="max-h-36 overflow-y-auto space-y-0.5 divide-y divide-slate-50">
-                <div
-                  onClick={() => {
-                    setColumnFilters(prev => {
-                      const next = { ...prev };
-                      delete next[fieldKey];
-                      return next;
-                    });
-                    setActiveHeaderFilterCol(null);
-                  }}
-                  className={`px-2 py-1 rounded cursor-pointer text-[11px] hover:bg-slate-100 flex items-center justify-between ${
-                    !isFiltered ? 'font-bold text-blue-600 bg-blue-50/50' : 'text-slate-600'
-                  }`}
-                >
-                  <span>(All)</span>
-                  {!isFiltered && <Check size={12} className="text-blue-600" />}
-                </div>
-                {uniqueVals.map((val, idx) => {
-                  const isSelected = String(columnFilters[fieldKey] || '').toLowerCase() === String(val).toLowerCase();
-                  return (
-                    <div
-                      key={idx}
-                      onClick={() => {
-                        setColumnFilters(prev => ({ ...prev, [fieldKey]: val }));
-                        setActiveHeaderFilterCol(null);
-                      }}
-                      className={`px-2 py-1 rounded cursor-pointer text-[11px] hover:bg-slate-100 flex items-center justify-between truncate ${
-                        isSelected ? 'font-bold text-blue-600 bg-blue-50/50' : 'text-slate-600'
-                      }`}
-                      title={val}
-                    >
-                      <span className="truncate">{val}</span>
-                      {isSelected && <Check size={12} className="text-blue-600 shrink-0" />}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <p className="px-0.5 text-[10px] leading-4 text-slate-500">
+              Results update as you type. Separate multiple words with spaces.
+            </p>
           </div>
         )}
       </div>
@@ -2266,7 +2217,7 @@ const People = () => {
                         )}
                         <th className="px-6 py-4 font-bold">
                           <div className="flex items-center gap-2 whitespace-nowrap">
-                            {renderHeaderWithFilter(nameHeader, '__name', getColumnUniqueValues('__name'))}
+                            {renderHeaderWithFilter(nameHeader, '__name')}
                             {nameHeaderObj && (
                               <span
                                 className="rounded-full border border-slate-200 bg-white px-1.5 py-0.5 text-[9px] font-bold normal-case tracking-normal text-slate-500"
@@ -2280,7 +2231,7 @@ const People = () => {
                         {tableColumns.map(col => (
                           <th key={col.field} className="px-6 py-4 font-bold">
                             <div className="flex items-center gap-2 whitespace-nowrap">
-                              {renderHeaderWithFilter(col.label, col.field, getColumnUniqueValues(col.field))}
+                              {renderHeaderWithFilter(col.label, col.field)}
                               <span
                                 className="rounded-full border border-slate-200 bg-white px-1.5 py-0.5 text-[9px] font-bold normal-case tracking-normal text-slate-500"
                                 title={`Column data type: ${registrationFieldTypeLabel(col.type)}`}
@@ -2292,7 +2243,7 @@ const People = () => {
                         ))}
                         {isHostel && (
                           <th className="px-6 py-4 font-bold">
-                            {renderHeaderWithFilter('Status', '__status', ['active', 'graduated', 'left_college', 'left_hostel', 'suspended'])}
+                            {renderHeaderWithFilter('Status', '__status')}
                           </th>
                         )}
                         {user?.role !== 'faculty' && <th className="px-6 py-4 font-bold text-right">Actions</th>}
