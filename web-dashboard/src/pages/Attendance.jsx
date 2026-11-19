@@ -310,6 +310,10 @@ const Attendance = () => {
     // Group by the immutable shift/operational day from the backend. Grouping
     // by the timestamp's calendar date splits overnight IN/OUT pairs.
     const logDate = operationalDateKey(log);
+    // A date change renders before the replacement request completes. Keep
+    // the previous response from briefly leaking into the new date's cards.
+    if (filters.startDate && logDate < filters.startDate) return acc;
+    if (filters.endDate && logDate > filters.endDate) return acc;
     const shiftName = String(log.shift || 'Work').trim() || 'Work';
     const key = log.person_id
       ? `id:${log.person_id}-${logDate}-${shiftName}`
@@ -388,6 +392,10 @@ const Attendance = () => {
         total: groups.length,
         checkedIn: groups.filter((group) => group.logs.some((log) => log.status === 'CHECK_IN')).length,
         checkedOut: groups.filter((group) => group.logs.some((log) => log.status === 'CHECK_OUT')).length,
+        missingCheckout: groups.filter((group) => (
+          group.logs.some((log) => log.status === 'CHECK_IN')
+          && group.latestLog.status !== 'CHECK_OUT'
+        )).length,
       };
     })
     .filter(Boolean)
@@ -398,6 +406,10 @@ const Attendance = () => {
     if (`${group.attendanceDate}::${group.shiftName}` !== summarySelection.key) return false;
     if (summarySelection.status === 'check_in') return group.logs.some((log) => log.status === 'CHECK_IN');
     if (summarySelection.status === 'check_out') return group.logs.some((log) => log.status === 'CHECK_OUT');
+    if (summarySelection.status === 'missing_checkout') {
+      return group.logs.some((log) => log.status === 'CHECK_IN')
+        && group.latestLog.status !== 'CHECK_OUT';
+    }
     return true;
   });
 
@@ -584,11 +596,12 @@ const Attendance = () => {
                     </div>
                     <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">Completed</span>
                   </div>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {[
                       ['all', 'People', summary.total, 'text-slate-800'],
                       ['check_in', 'Checked In', summary.checkedIn, 'text-emerald-700'],
                       ['check_out', 'Checked Out', summary.checkedOut, 'text-blue-700'],
+                      ['missing_checkout', 'Not Checked Out', summary.missingCheckout, 'text-amber-700'],
                     ].map(([status, label, count, color]) => (
                       <button
                         key={status}
