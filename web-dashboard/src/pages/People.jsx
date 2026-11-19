@@ -1750,12 +1750,21 @@ const People = () => {
                     [fieldKey]: val
                   }));
                 }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    setActiveHeaderFilterCol(null);
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setActiveHeaderFilterCol(null);
+                  }
+                }}
                 className="w-full pl-7 pr-2 py-1 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                 autoFocus
               />
             </div>
             <p className="px-0.5 text-[10px] leading-4 text-slate-500">
-              Results update as you type. Separate multiple words with spaces.
+              Press Enter to apply and close. Separate multiple words with spaces.
             </p>
           </div>
         )}
