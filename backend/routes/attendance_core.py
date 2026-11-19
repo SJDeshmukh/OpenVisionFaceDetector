@@ -254,6 +254,21 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
             if value not in (None, "")
         )
         class_option_labels[class_id] = str(class_row[4] or fallback_label or class_id)
+
+    # The attendance screen uses these vendor-scoped schedules to decide when
+    # a shift is complete.  Do not expose assignment or employee data here.
+    c.execute("SELECT shifts FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+    company_row = c.fetchone()
+    shift_schedules = []
+    for policy in parse_shift_list(company_row[0] if company_row else None):
+        shift_schedules.append({
+            "id": policy.shift_id,
+            "name": policy.name,
+            "start_time": policy.start_time,
+            "end_time": policy.end_time,
+            "timezone": policy.timezone,
+            "is_cross_midnight": policy.is_cross_midnight,
+        })
     conn.close()
     
     # Apply standard request filters if any
@@ -340,7 +355,7 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
     result = {
         "names": names, "departments": departments, "designations": designations,
         "shifts": shifts, "phones": phones, "visible_standard_filters": visible_standard_filters,
-        "dynamic_filters": dynamic_filters
+        "dynamic_filters": dynamic_filters, "shift_schedules": shift_schedules
     }
     cache_set(cache_key, result, 15)
     return jsonify(result)

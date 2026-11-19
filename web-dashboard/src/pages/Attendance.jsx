@@ -49,7 +49,8 @@ const Attendance = () => {
     return `${year}-${month}-${day}`;
   };
 
-  const [filterOptions, setFilterOptions] = useState({ names: [], departments: [], designations: [], shifts: [], phones: [], dynamic_filters: {}, visible_standard_filters: {} });
+  const [filterOptions, setFilterOptions] = useState({ names: [], departments: [], designations: [], shifts: [], phones: [], dynamic_filters: {}, visible_standard_filters: {}, shift_schedules: [] });
+  const [summarySelection, setSummarySelection] = useState({ key: '', status: 'all' });
   const [filters, setFilters] = useState(() => {
     const today = getLocalDateString();
     return {
@@ -85,6 +86,7 @@ const Attendance = () => {
     fetchLogs(); // Trigger fetch on mount and filter change
     setCurrentPage(1);
     setExpandedRow(null);
+    setSummarySelection({ key: '', status: 'all' });
   }, [filters, personType]);
 
   useEffect(() => {
@@ -308,9 +310,10 @@ const Attendance = () => {
     // Group by the immutable shift/operational day from the backend. Grouping
     // by the timestamp's calendar date splits overnight IN/OUT pairs.
     const logDate = operationalDateKey(log);
-    const key = log.person_id 
-      ? `id:${log.person_id}-${logDate}` 
-      : `name:${log.vendor_id || 'unknown'}:${log.name}-${logDate}`;
+    const shiftName = String(log.shift || 'Work').trim() || 'Work';
+    const key = log.person_id
+      ? `id:${log.person_id}-${logDate}-${shiftName}`
+      : `name:${log.vendor_id || 'unknown'}:${log.name}-${logDate}-${shiftName}`;
       
     if (!acc[key]) {
       acc[key] = {
@@ -318,6 +321,7 @@ const Attendance = () => {
         name: log.name,
         person_id: log.person_id || null,
         attendanceDate: logDate,
+        shiftName,
         logs: []
       };
     }
@@ -332,16 +336,76 @@ const Attendance = () => {
       name: group.name,
       person_id: group.person_id,
       attendanceDate: group.attendanceDate,
+      shiftName: group.shiftName,
       logs: group.logs.sort((a, b) => parseDate(b.timestamp) - parseDate(a.timestamp)),
       latestLog: group.logs.sort((a, b) => parseDate(b.timestamp) - parseDate(a.timestamp))[0]
     }))
     .sort((a, b) => parseDate(b.latestLog.timestamp) - parseDate(a.latestLog.timestamp));
 
+  const shiftSchedules = Array.isArray(filterOptions.shift_schedules) ? filterOptions.shift_schedules : [];
+  const scheduleByName = new Map(shiftSchedules.map((shift) => [String(shift.name || '').trim().toLowerCase(), shift]));
+  const summaryKeys = new Set(sortedGroups.map((group) => `${group.attendanceDate}::${group.shiftName}`));
+  if (filters.startDate && filters.startDate === filters.endDate) {
+    shiftSchedules.forEach((shift) => summaryKeys.add(`${filters.startDate}::${shift.name}`));
+  }
+
+  const isShiftComplete = (attendanceDate, schedule) => {
+    if (!schedule?.end_time) return attendanceDate < getLocalDateString();
+    const [year, month, day] = attendanceDate.split('-').map(Number);
+    const [hour, minute] = String(schedule.end_time).split(':').map(Number);
+    if (![year, month, day, hour, minute].every(Number.isFinite)) return false;
+    const end = new Date(Date.UTC(year, month - 1, day, hour, minute));
+    if (schedule.is_cross_midnight) end.setUTCDate(end.getUTCDate() + 1);
+    try {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: schedule.timezone || 'Asia/Kolkata',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+      }).formatToParts(new Date());
+      const value = (type) => Number(parts.find((part) => part.type === type)?.value);
+      const zonedNow = Date.UTC(value('year'), value('month') - 1, value('day'), value('hour'), value('minute'));
+      return end.getTime() <= zonedNow;
+    } catch {
+      const localEnd = new Date(year, month - 1, day, hour, minute);
+      if (schedule.is_cross_midnight) localEnd.setDate(localEnd.getDate() + 1);
+      return localEnd.getTime() <= Date.now();
+    }
+  };
+
+  const completedShiftSummaries = Array.from(summaryKeys)
+    .map((key) => {
+      const separator = key.indexOf('::');
+      const attendanceDate = key.slice(0, separator);
+      const shiftName = key.slice(separator + 2);
+      const schedule = scheduleByName.get(shiftName.trim().toLowerCase());
+      if (!schedule || !isShiftComplete(attendanceDate, schedule)) return null;
+      const groups = sortedGroups.filter((group) => group.attendanceDate === attendanceDate && group.shiftName === shiftName);
+      return {
+        key,
+        attendanceDate,
+        shiftName,
+        schedule,
+        total: groups.length,
+        checkedIn: groups.filter((group) => group.logs.some((log) => log.status === 'CHECK_IN')).length,
+        checkedOut: groups.filter((group) => group.logs.some((log) => log.status === 'CHECK_OUT')).length,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.attendanceDate.localeCompare(a.attendanceDate) || a.schedule.start_time.localeCompare(b.schedule.start_time));
+
+  const visibleGroups = sortedGroups.filter((group) => {
+    if (!summarySelection.key) return true;
+    if (`${group.attendanceDate}::${group.shiftName}` !== summarySelection.key) return false;
+    if (summarySelection.status === 'check_in') return group.logs.some((log) => log.status === 'CHECK_IN');
+    if (summarySelection.status === 'check_out') return group.logs.some((log) => log.status === 'CHECK_OUT');
+    return true;
+  });
+
   const groupsPerPage = 25;
-  const totalPages = Math.max(1, Math.ceil(sortedGroups.length / groupsPerPage));
+  const totalPages = Math.max(1, Math.ceil(visibleGroups.length / groupsPerPage));
   const visiblePage = Math.min(currentPage, totalPages);
   const pageStart = (visiblePage - 1) * groupsPerPage;
-  const paginatedGroups = sortedGroups.slice(pageStart, pageStart + groupsPerPage);
+  const paginatedGroups = visibleGroups.slice(pageStart, pageStart + groupsPerPage);
 
   const changePage = (page) => {
     setCurrentPage(Math.max(1, Math.min(page, totalPages)));
@@ -482,6 +546,72 @@ const Attendance = () => {
         </button>
       </div>
 
+      {!isRegularUser && showShiftColumn && completedShiftSummaries.length > 0 && (
+        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" aria-labelledby="completed-shift-heading">
+          <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 id="completed-shift-heading" className="font-semibold text-slate-800">Completed shift attendance</h2>
+              <p className="text-sm text-slate-500">Ongoing shifts appear here only after their scheduled end time.</p>
+            </div>
+            {summarySelection.key && (
+              <button
+                type="button"
+                onClick={() => { setSummarySelection({ key: '', status: 'all' }); setCurrentPage(1); }}
+                className="self-start text-sm font-medium text-blue-600 hover:text-blue-700"
+              >
+                Show all attendance
+              </button>
+            )}
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+            {completedShiftSummaries.map((summary) => {
+              const selected = summarySelection.key === summary.key;
+              const selectSummary = (status) => {
+                setSummarySelection(selected && summarySelection.status === status
+                  ? { key: '', status: 'all' }
+                  : { key: summary.key, status });
+                setCurrentPage(1);
+                setExpandedRow(null);
+              };
+              return (
+                <div key={summary.key} className={cn("rounded-lg border p-3", selected ? "border-blue-300 bg-blue-50/40" : "border-slate-200")}>
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-slate-800">{summary.shiftName}</p>
+                      <p className="text-xs text-slate-500">
+                        {formatOperationalDate(summary.attendanceDate)} · {summary.schedule.start_time}–{summary.schedule.end_time}
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">Completed</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      ['all', 'People', summary.total, 'text-slate-800'],
+                      ['check_in', 'Checked In', summary.checkedIn, 'text-emerald-700'],
+                      ['check_out', 'Checked Out', summary.checkedOut, 'text-blue-700'],
+                    ].map(([status, label, count, color]) => (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={() => selectSummary(status)}
+                        aria-pressed={selected && summarySelection.status === status}
+                        className={cn(
+                          "rounded-lg border px-2 py-2 text-left transition-colors hover:bg-slate-50",
+                          selected && summarySelection.status === status ? "border-blue-400 bg-white ring-2 ring-blue-100" : "border-slate-200 bg-white"
+                        )}
+                      >
+                        <span className={cn("block text-lg font-bold", color)}>{count}</span>
+                        <span className="block text-[11px] font-medium text-slate-500">{label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* Table */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
@@ -502,7 +632,7 @@ const Attendance = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {(loading || (isRefreshing && sortedGroups.length === 0)) ? (
+              {(loading || (isRefreshing && visibleGroups.length === 0)) ? (
                 <tr>
                   <td colSpan="8" className="p-8 text-center text-slate-500">
                     <div className="flex items-center justify-center space-x-2">
@@ -511,7 +641,7 @@ const Attendance = () => {
                     </div>
                   </td>
                 </tr>
-              ) : sortedGroups.length === 0 ? (
+              ) : visibleGroups.length === 0 ? (
                 <tr><td colSpan="8" className="p-8 text-center text-slate-500">No attendance records found.</td></tr>
               ) : (
                 paginatedGroups.map((group) => {
@@ -653,10 +783,10 @@ const Attendance = () => {
             </tbody>
           </table>
         </div>
-        {sortedGroups.length > 0 && (
+        {visibleGroups.length > 0 && (
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-200 px-6 py-4">
             <p className="text-sm text-slate-500">
-              Showing {pageStart + 1}–{Math.min(pageStart + groupsPerPage, sortedGroups.length)} of {sortedGroups.length} employee-day records
+              Showing {pageStart + 1}–{Math.min(pageStart + groupsPerPage, visibleGroups.length)} of {visibleGroups.length} employee-shift records
             </p>
             <div className="flex items-center gap-2">
               <button
