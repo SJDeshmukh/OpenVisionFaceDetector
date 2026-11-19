@@ -389,7 +389,6 @@ const Attendance = () => {
         attendanceDate,
         shiftName,
         schedule,
-        total: groups.length,
         checkedIn: groups.filter((group) => group.logs.some((log) => log.status === 'CHECK_IN')).length,
         checkedOut: groups.filter((group) => group.logs.some((log) => log.status === 'CHECK_OUT')).length,
         missingCheckout: groups.filter((group) => (
@@ -596,9 +595,8 @@ const Attendance = () => {
                     </div>
                     <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">Completed</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="grid grid-cols-3 gap-2">
                     {[
-                      ['all', 'People', summary.total, 'text-slate-800'],
                       ['check_in', 'Checked In', summary.checkedIn, 'text-emerald-700'],
                       ['check_out', 'Checked Out', summary.checkedOut, 'text-blue-700'],
                       ['missing_checkout', 'Not Checked Out', summary.missingCheckout, 'text-amber-700'],
