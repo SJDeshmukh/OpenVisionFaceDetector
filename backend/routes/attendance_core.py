@@ -41,6 +41,7 @@ from services.attendance_shift_service import (
     load_person_shift_policy,
     parse_shift_list,
     scheduled_payable_hours,
+    shift_policy_from_dict,
 )
 from domain.attendance import AttendanceEventSource
 from services.auth_service import require_auth, extract_token
@@ -260,7 +261,10 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
     c.execute("SELECT shifts FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
     company_row = c.fetchone()
     shift_schedules = []
-    for policy in parse_shift_list(company_row[0] if company_row else None):
+    for shift in parse_shift_list(company_row[0] if company_row else None):
+        if shift.get("active", shift.get("is_active", True)) is False:
+            continue
+        policy = shift_policy_from_dict(shift)
         shift_schedules.append({
             "id": policy.shift_id,
             "name": policy.name,
