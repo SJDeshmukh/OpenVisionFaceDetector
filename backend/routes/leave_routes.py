@@ -945,7 +945,7 @@ def create_leave_request():
                 SELECT id, leave_type, start_date, end_date, final_status
                 FROM leave_requests
                 WHERE vendor_id = %s AND student_id = %s
-                  AND final_status NOT IN ('rejected', 'cancelled')
+                  AND final_status NOT IN ('rejected', 'cancelled', 'completed')
                   AND start_date <= %s AND end_date >= %s
                 ORDER BY start_date ASC
                 LIMIT 1
@@ -955,7 +955,7 @@ def create_leave_request():
                 SELECT id, leave_type, start_date, end_date, final_status
                 FROM leave_requests
                 WHERE vendor_id = ? AND student_id = ?
-                  AND final_status NOT IN ('rejected', 'cancelled')
+                  AND final_status NOT IN ('rejected', 'cancelled', 'completed')
                   AND start_date <= ? AND end_date >= ?
                 ORDER BY start_date ASC
                 LIMIT 1
@@ -1136,7 +1136,7 @@ def update_leave_request(request_id):
                 FROM leave_requests
                 WHERE vendor_id = %s AND student_id = %s
                   AND id != %s
-                  AND final_status NOT IN ('rejected', 'cancelled')
+                  AND final_status NOT IN ('rejected', 'cancelled', 'completed')
                   AND start_date <= %s AND end_date >= %s
                 ORDER BY start_date ASC
                 LIMIT 1
@@ -1147,7 +1147,7 @@ def update_leave_request(request_id):
                 FROM leave_requests
                 WHERE vendor_id = ? AND student_id = ?
                   AND id != ?
-                  AND final_status NOT IN ('rejected', 'cancelled')
+                  AND final_status NOT IN ('rejected', 'cancelled', 'completed')
                   AND start_date <= ? AND end_date >= ?
                 ORDER BY start_date ASC
                 LIMIT 1
@@ -3066,6 +3066,13 @@ def _generate_status_badge_png(status_key):
             "text_color": (71, 85, 105, 255),   # #475569
             "label": "Completed · Already Approved",
         },
+        "completed": {
+            "bg": (236, 253, 245, 255),
+            "border": (167, 243, 208, 255),
+            "dot": (5, 150, 105, 255),
+            "text_color": (6, 95, 70, 255),
+            "label": "Leave Over · Resident Returned",
+        },
         "cancelled": {
             "bg": (248, 250, 252, 255),         # #f8fafc
             "border": (226, 232, 240, 255),     # #e2e8f0
@@ -3157,6 +3164,7 @@ def _generate_status_badge_svg(status_key):
     config = {
         "pending": ("#eff6ff", "#93c5fd", "#2563eb", "#1d4ed8", "Action Required · Pending Review"),
         "approved": ("#f1f5f9", "#cbd5e1", "#10b981", "#475569", "Completed · Already Approved"),
+        "completed": ("#ecfdf5", "#a7f3d0", "#059669", "#065f46", "Leave Over · Resident Returned"),
         "cancelled": ("#f8fafc", "#e2e8f0", "#94a3b8", "#64748b", "Cancelled · Request Withdrawn"),
         "rejected": ("#fef2f2", "#fecaca", "#ef4444", "#991b1b", "Closed · Request Rejected"),
     }
@@ -3207,6 +3215,8 @@ def get_leave_status_badge(request_id):
                     status_key = "cancelled"
                 elif final_status == "rejected":
                     status_key = "rejected"
+                elif final_status == "completed":
+                    status_key = "completed"
                 elif final_status == "approved":
                     status_key = "approved"
                 else:

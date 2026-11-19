@@ -35,6 +35,7 @@ from services.manual_attendance_action_service import (
     should_use_manual_kiosk_mode,
     validate_manual_action,
 )
+from services.leave_return_service import complete_leave_on_hostel_entry
 from services.attendance_action_mode_service import resolve_action_mode_at
 from services.attendance_shift_service import (
     choose_shift_policy,
@@ -778,6 +779,7 @@ def person_event(valid_data: PersonEventSchema):
         person_id and vendor_id_to_check and
         "hostel_attendance_alerts" in enabled_features
     )
+    completed_leave_id = None
     # A kiosk timestamp means this is an offline replay (live Identify requests
     # omit it). The device's status was predicted from its local cache and may
     # be stale if another kiosk marked this person while it was disconnected.
@@ -820,6 +822,17 @@ def person_event(valid_data: PersonEventSchema):
                 timeline.target_timestamp if timeline and timeline.target_timestamp
                 else existing_event.event_timestamp
             )
+            if hostel_movement_mode:
+                completed_leave_id = complete_leave_on_hostel_entry(
+                    c,
+                    vendor_id_to_check,
+                    person_id,
+                    parse_db_datetime(event_timestamp),
+                    existing_status,
+                )
+                if completed_leave_id:
+                    conn.commit()
+                    cache_delete_vendor_prefix(vendor_id_to_check)
             conn.close()
             return jsonify({
                 "speak": True,
@@ -832,6 +845,7 @@ def person_event(valid_data: PersonEventSchema):
                 "duplicate": True,
                 "accepted": True,
                 "event_id": existing_event.event_id,
+                "completed_leave_id": completed_leave_id,
             })
 
     if manual_kiosk_mode and manual_action_status not in ("CHECK_IN", "CHECK_OUT"):
@@ -1162,6 +1176,14 @@ def person_event(valid_data: PersonEventSchema):
             )
             latest_status = latest_status or new_status
             latest_timestamp = latest_timestamp or event_timestamp
+        if hostel_movement_mode:
+            completed_leave_id = complete_leave_on_hostel_entry(
+                c,
+                vendor_id_to_check,
+                person_id,
+                parse_db_datetime(event_timestamp),
+                new_status,
+            )
         conn.commit()
         if vendor_id_to_check: cache_delete_vendor_prefix(vendor_id_to_check)
         if vendor_id_to_check and socketio:
@@ -1179,6 +1201,7 @@ def person_event(valid_data: PersonEventSchema):
                 "vendor_id": vendor_id_to_check,
                 "device_id": curr_dev_id,
                 "event_id": ingestion.event_id,
+                "completed_leave_id": completed_leave_id,
                 "captured_image": captured_image,
             }
             socketio.emit('attendance_updated', ev, room=f"vendor_{vendor_id_to_check}")
@@ -1238,6 +1261,7 @@ def person_event(valid_data: PersonEventSchema):
             "latest_timestamp": latest_timestamp,
             "timeline_reconciled": reconciled_count > 0,
             "reconciled_count": reconciled_count,
+            "completed_leave_id": completed_leave_id,
             "is_late": is_late,
             "activity": activity_name,
             "person_id": person_id,

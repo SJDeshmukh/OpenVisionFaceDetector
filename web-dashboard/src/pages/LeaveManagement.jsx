@@ -754,6 +754,7 @@ const LeaveManagement = () => {
               <option value="all">All Status</option>
               <option value="pending">Pending</option>
               <option value="approved">Approved</option>
+              <option value="completed">Completed / Returned</option>
               <option value="rejected">Rejected</option>
             </select>
           </div>
@@ -1152,8 +1153,8 @@ const LeaveManagement = () => {
                           Cancellation Pending Parent
                         </span>
                       ) : (
-                        <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${req.final_status === 'approved' ? 'bg-green-100 text-green-700' : req.final_status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
-                          {req.final_status}
+                        <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${['approved', 'completed'].includes(req.final_status) ? 'bg-green-100 text-green-700' : req.final_status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                          {req.final_status === 'completed' ? 'Leave Over · Returned' : req.final_status}
                         </span>
                       )}
                     </div>
@@ -1253,7 +1254,7 @@ const LeaveManagement = () => {
                           );
                         })()}
                         {/* Student Cancel Leave Button */}
-                        {isRegularUser && req.final_status !== 'cancelled' && req.cancellation_status !== 'approved' && req.final_status !== 'rejected' && !(Number(req.is_cancellation) === 1 && req.cancellation_status === 'pending') && (
+                        {isRegularUser && !['cancelled', 'rejected', 'completed'].includes(req.final_status) && req.cancellation_status !== 'approved' && !(Number(req.is_cancellation) === 1 && req.cancellation_status === 'pending') && (
                           <button
                             type="button"
                             onClick={() => handleOpenCancelModal(req)}
