@@ -240,6 +240,7 @@ const People = () => {
   const [selectedBatchFilter, setSelectedBatchFilter] = useState('all');
   const [columnFilters, setColumnFilters] = useState({});
   const [activeHeaderFilterCol, setActiveHeaderFilterCol] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
 
   // Status Modal State
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
@@ -1689,6 +1690,20 @@ const People = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [users, searchTerm, selectedClassForView, statusFilter, isHostel, selectedDeptFilter, selectedGroupFilter, selectedBatchFilter, faceFilter, parentFilter, columnFilters, registrationColumns]);
 
+  const peoplePerPage = 25;
+  const totalPages = Math.max(1, Math.ceil(filteredUsers.length / peoplePerPage));
+  const visiblePage = Math.min(currentPage, totalPages);
+  const pageStart = (visiblePage - 1) * peoplePerPage;
+  const paginatedUsers = filteredUsers.slice(pageStart, pageStart + peoplePerPage);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, selectedClassForView, statusFilter, selectedDeptFilter, selectedGroupFilter, selectedBatchFilter, faceFilter, parentFilter, columnFilters]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
   const renderHeaderWithFilter = (title, fieldKey) => {
     const isFiltered = Boolean(columnFilters[fieldKey]);
     const isOpen = activeHeaderFilterCol === fieldKey;
@@ -2268,7 +2283,7 @@ const People = () => {
                           <td colSpan={tableColumns.length + 1 + (isHostel ? 1 : 0) + (user?.role !== 'faculty' ? 1 : 0) + (isHostel && user?.role !== 'faculty' ? 1 : 0)} className="px-6 py-8 text-center text-slate-400">No records found.</td>
                         </tr>
                       ) : (
-                        filteredUsers.map((person, idx) => (
+                        paginatedUsers.map((person, idx) => (
                           <tr key={person.id || person.person_id || idx} className={`hover:bg-slate-50/60 transition-colors ${isHostel && selectedPersonIds.includes(person.id) ? 'bg-blue-50/40' : ''}`}>
                             {isHostel && user?.role !== 'faculty' && (
                               <td className="w-10 px-4 py-4 text-center" onClick={(e) => e.stopPropagation()}>
@@ -2290,7 +2305,7 @@ const People = () => {
                                 <PersonAvatar person={person} />
                                 <div>
                                   <div className="text-sm font-bold text-slate-800 tracking-tight">{person.name}</div>
-                                  <div className="text-[10px] text-slate-400 font-mono uppercase">#{searchTerm ? (person.display_id || (idx + 1)) : (idx + 1)}</div>
+                                  <div className="text-[10px] text-slate-400 font-mono uppercase">#{person.display_id || (pageStart + idx + 1)}</div>
                                 </div>
                               </div>
                             </td>
@@ -2465,11 +2480,26 @@ const People = () => {
               {/* Pagination info */}
               <div className="mt-4 flex items-center justify-between text-xs text-slate-500 font-medium bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                 <div>
-                  Showing <span className="font-bold text-slate-800">1</span> to <span className="font-bold text-slate-800">{filteredUsers.length}</span> of <span className="font-bold text-slate-800">{filteredUsers.length}</span> results
+                  Showing <span className="font-bold text-slate-800">{filteredUsers.length ? pageStart + 1 : 0}</span> to <span className="font-bold text-slate-800">{Math.min(pageStart + peoplePerPage, filteredUsers.length)}</span> of <span className="font-bold text-slate-800">{filteredUsers.length}</span> results
                 </div>
-                <div className="flex gap-2">
-                   <button className="px-3 py-1.5 border border-slate-200 rounded-lg opacity-50 cursor-not-allowed">Previous</button>
-                   <button className="px-3 py-1.5 border border-slate-200 rounded-lg opacity-50 cursor-not-allowed">Next</button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                    disabled={visiblePage === 1}
+                    className="px-3 py-1.5 border border-slate-200 rounded-lg transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Previous
+                  </button>
+                  <span className="px-2 font-bold text-slate-700">Page {visiblePage} of {totalPages}</span>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                    disabled={visiblePage === totalPages}
+                    className="px-3 py-1.5 border border-slate-200 rounded-lg transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Next
+                  </button>
                 </div>
               </div>
             </>
