@@ -19,6 +19,48 @@ import { getBusinessTerminology, usesStudentRecords, isHostelVertical } from '..
 
 import { useSocket } from '../context/SocketContext';
 
+const localDateString = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const previousDateString = (dateString) => {
+  const [year, month, day] = String(dateString).split('-').map(Number);
+  const previous = new Date(Date.UTC(year, month - 1, day));
+  previous.setUTCDate(previous.getUTCDate() - 1);
+  return previous.toISOString().slice(0, 10);
+};
+
+const currentShiftOperationalDate = (schedules = [], now = new Date()) => {
+  for (const schedule of schedules) {
+    if (!schedule?.is_cross_midnight || !schedule?.end_time) continue;
+    try {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: schedule.timezone || 'Asia/Kolkata',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+      }).formatToParts(now);
+      const value = (type) => Number(parts.find((part) => part.type === type)?.value);
+      const dateString = `${value('year')}-${String(value('month')).padStart(2, '0')}-${String(value('day')).padStart(2, '0')}`;
+      const [endHour, endMinute] = String(schedule.end_time).split(':').map(Number);
+      const currentMinutes = value('hour') * 60 + value('minute');
+      const endMinutes = endHour * 60 + endMinute;
+      if ([endHour, endMinute, currentMinutes].every(Number.isFinite) && currentMinutes <= endMinutes) {
+        return previousDateString(dateString);
+      }
+    } catch {
+      // An invalid tenant timezone falls back to the browser's local clock.
+      const [endHour, endMinute] = String(schedule.end_time).split(':').map(Number);
+      if (now.getHours() * 60 + now.getMinutes() <= endHour * 60 + endMinute) {
+        return localDateString(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+      }
+    }
+  }
+  return localDateString(now);
+};
+
 const Attendance = () => {
   const { socket } = useSocket();
   const [logs, setLogs] = useState([]);
@@ -42,12 +84,7 @@ const Attendance = () => {
     return `data:image/jpeg;base64,${value}`;
   };
 
-  const getLocalDateString = (d = new Date()) => {
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
+  const getLocalDateString = localDateString;
 
   const [filterOptions, setFilterOptions] = useState({ names: [], departments: [], designations: [], shifts: [], phones: [], dynamic_filters: {}, visible_standard_filters: {}, shift_schedules: [] });
   const [summarySelection, setSummarySelection] = useState({ key: '', status: 'all' });
@@ -65,6 +102,7 @@ const Attendance = () => {
     };
   });
   const [deviceOptions, setDeviceOptions] = useState([]);
+  const initialOperationalDateResolvedRef = useRef(false);
   const { user } = useAuth();
   const terminology = getBusinessTerminology(user?.vertical);
   const schoolFlow = usesStudentRecords(user?.vertical);
@@ -119,6 +157,19 @@ const Attendance = () => {
     const t = setTimeout(() => fetchFilters(filtersRef.current), 250);
     return () => clearTimeout(t);
   }, [filters, personType]);
+
+  useEffect(() => {
+    const schedules = Array.isArray(filterOptions.shift_schedules) ? filterOptions.shift_schedules : [];
+    if (initialOperationalDateResolvedRef.current || schedules.length === 0) return;
+    initialOperationalDateResolvedRef.current = true;
+    const current = filtersRef.current;
+    const calendarToday = getLocalDateString();
+    if (current.startDate !== calendarToday || current.endDate !== calendarToday) return;
+    const operationalDate = currentShiftOperationalDate(schedules);
+    if (operationalDate !== calendarToday) {
+      setFilters({ ...current, startDate: operationalDate, endDate: operationalDate });
+    }
+  }, [filterOptions.shift_schedules]);
 
   const fetchFilters = async (activeFilters) => {
     try {
@@ -449,7 +500,11 @@ const Attendance = () => {
           <div className="relative">
             <button
               onClick={() => {
-                const today = getLocalDateString();
+                const schedules = Array.isArray(filterOptions.shift_schedules) ? filterOptions.shift_schedules : [];
+                const selectedSchedules = filters.shift
+                  ? schedules.filter((schedule) => String(schedule.name || '').trim().toLowerCase() === String(filters.shift).trim().toLowerCase())
+                  : schedules;
+                const today = currentShiftOperationalDate(selectedSchedules.length ? selectedSchedules : schedules);
                 setFilters({
                   ...filters,
                   startDate: today,
@@ -457,6 +512,7 @@ const Attendance = () => {
                   name: ''
                 });
               }}
+              title="Show the current operational shift day"
               className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
             >
               <Calendar size={18} />
