@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Base configuration for all network traffic -->
+    <!-- Cleartext traffic (HTTP) is disabled by default for security, allowing only secure HTTPS -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <!-- Only trust standard system pre-installed CA certificates -->
+            <!-- User-installed custom certificates (e.g., Charles Proxy, Burp Suite) are REJECTED -->
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Specific configuration for tapinx domains -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">tapinx.in</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
+    <!-- Debug overrides: user certificates allowed ONLY during debug builds, never in release -->
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>

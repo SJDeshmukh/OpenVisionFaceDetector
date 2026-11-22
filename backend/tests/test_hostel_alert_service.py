@@ -308,3 +308,41 @@ def test_leave_checkout_alert_dispatches_to_parent_for_all_residents(tmp_path):
     assert len(sent) == 2
     assert sent[1][1] == "9000000023"
     assert "Rahul Verma" in sent[1][2]
+
+
+def test_leave_return_alert_dispatches_to_parent(tmp_path):
+    from services.hostel_alert_service import process_leave_return_alert
+    factory = _database(tmp_path)
+    conn = factory()
+    conn.execute("INSERT INTO faces VALUES (5, 1, 'Priya Patel', '9000000020', '{\"person_type\":\"student\",\"gender\":\"female\",\"parent_phone\":\"9000000021\"}')")
+    conn.execute("INSERT INTO leave_requests VALUES (101, 1, 5, 'night_out', 'Family function', '2026-09-21', '2026-09-22', '18:00', '20:00', 'completed', 'approved')")
+    conn.commit()
+    conn.close()
+
+    save_settings(1, {
+        "enabled": True,
+        "leave_return_alert_enabled": True,
+        "timezone": "Asia/Kolkata",
+    }, connection_factory=factory)
+
+    sent = []
+    def sender(vendor_id, phone, message):
+        sent.append((vendor_id, phone, message))
+        return {"success": True}
+
+    return_time = datetime(2026, 9, 22, 14, 0, tzinfo=timezone.utc)  # 19:30 IST
+
+    # 1. Resident returns and checks in -> sends WhatsApp to parent
+    res = process_leave_return_alert(1, 5, leave_id=101, timestamp=return_time, connection_factory=factory, sender=sender)
+    assert res["status"] == "sent"
+    assert len(sent) == 1
+    assert sent[0][1] == "9000000021"
+    assert "Priya Patel" in sent[0][2]
+    assert "Night Out" in sent[0][2]
+    assert "safely arrived" in sent[0][2]
+
+    # 2. Duplicate return on same day -> skipped
+    res_dup = process_leave_return_alert(1, 5, leave_id=101, timestamp=return_time, connection_factory=factory, sender=sender)
+    assert res_dup["status"] == "skipped"
+    assert len(sent) == 1
+

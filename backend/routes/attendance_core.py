@@ -1251,6 +1251,19 @@ def person_event(valid_data: PersonEventSchema):
             except Exception:
                 pass
 
+        # Hostel leave return / check-in WhatsApp alert to parents
+        if person_id and vendor_id_to_check and str(new_status).upper() in ("CHECK_IN", "IN", "ENTRY") and completed_leave_id:
+            try:
+                from services.hostel_alert_service import trigger_leave_return_alert_async
+                trigger_leave_return_alert_async(
+                    vendor_id=vendor_id_to_check,
+                    person_id=person_id,
+                    leave_id=completed_leave_id,
+                    timestamp=current_time_obj,
+                )
+            except Exception:
+                pass
+
         conn.close()
         return jsonify({
             "speak": True,

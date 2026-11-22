@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import {
   AlertTriangle, Bell, CheckCircle2, ChevronRight, Clock3, Inbox,
-  LoaderCircle, LogOut, MessageCircle, Phone, RefreshCw, RotateCcw, Save,
+  LoaderCircle, LogIn, LogOut, MessageCircle, Phone, RefreshCw, RotateCcw, Save,
   Send, ShieldCheck, Users, X,
 } from 'lucide-react';
 import { API_URL } from '../config';
@@ -10,9 +10,11 @@ import { API_URL } from '../config';
 const DEFAULT_STUDENT_TEMPLATE = '⚠️ *Hostel Entry Reminder*\n\nHello {student_name}, no hostel entry was recorded by {cutoff_time} on {date}. Please report to the hostel or contact the administrator.';
 const DEFAULT_PARENT_TEMPLATE = '⚠️ *Hostel Attendance Alert*\n\nDear Parent/Guardian, {student_name} has not recorded hostel entry as of {current_time} on {date}. Please contact the student or hostel administrator.';
 const DEFAULT_LEAVE_CHECKOUT_TEMPLATE = '🚪 *Hostel Departure Notification*\n\nDear Parent/Guardian, your ward *{student_name}* has checked out (departed) from the hostel on approved *{leave_type}* at *{exit_time}* on *{date}*.\n\nReason: {reason}\nExpected Return: {expected_return}\n\n_TapInX Hostel Safety Monitoring._';
+const DEFAULT_LEAVE_RETURN_TEMPLATE = '🏡 *Hostel Arrival Notification*\n\nDear Parent/Guardian, your ward *{student_name}* has safely arrived and checked in back at the hostel from *{leave_type}* at *{arrival_time}* on *{date}*.\n\n_TapInX Hostel Safety Monitoring._';
 
 const TEMPLATE_FIELDS = ['{student_name}', '{date}', '{cutoff_time}', '{current_time}'];
 const LEAVE_CHECKOUT_TEMPLATE_FIELDS = ['{student_name}', '{date}', '{exit_time}', '{leave_type}', '{reason}', '{expected_return}'];
+const LEAVE_RETURN_TEMPLATE_FIELDS = ['{student_name}', '{date}', '{arrival_time}', '{leave_type}'];
 
 const defaults = {
   enabled: 0,
@@ -25,6 +27,8 @@ const defaults = {
   owner_summary_enabled: 1,
   leave_checkout_alert_enabled: 1,
   leave_checkout_template: DEFAULT_LEAVE_CHECKOUT_TEMPLATE,
+  leave_return_alert_enabled: 1,
+  leave_return_template: DEFAULT_LEAVE_RETURN_TEMPLATE,
 };
 
 const normalizeSettings = (value = {}) => ({
@@ -37,6 +41,8 @@ const normalizeSettings = (value = {}) => ({
   parent_template: value.parent_template || DEFAULT_PARENT_TEMPLATE,
   leave_checkout_alert_enabled: value.leave_checkout_alert_enabled === undefined || value.leave_checkout_alert_enabled ? 1 : 0,
   leave_checkout_template: value.leave_checkout_template || DEFAULT_LEAVE_CHECKOUT_TEMPLATE,
+  leave_return_alert_enabled: value.leave_return_alert_enabled === undefined || value.leave_return_alert_enabled ? 1 : 0,
+  leave_return_template: value.leave_return_template || DEFAULT_LEAVE_RETURN_TEMPLATE,
 });
 
 const comparableSettings = (value) => JSON.stringify(normalizeSettings(value));
@@ -47,6 +53,7 @@ const previewTemplate = (template) => String(template || '')
   .replaceAll('{cutoff_time}', '07:00 PM')
   .replaceAll('{current_time}', '08:00 PM')
   .replaceAll('{exit_time}', '05:30 PM')
+  .replaceAll('{arrival_time}', '06:15 PM')
   .replaceAll('{leave_type}', 'Night Out')
   .replaceAll('{reason}', 'Family function at home')
   .replaceAll('{expected_return}', '22 Sep 2026');
@@ -71,7 +78,8 @@ const formatStage = (value) => ({
   parent_escalation: 'Parent escalation',
   owner_summary: 'Admin summary',
   leave_checkout: 'Leave departure (Exit)',
-}[value] || (String(value || '').startsWith('leave_checkout') ? 'Leave departure (Exit)' : String(value || 'Alert').replaceAll('_', ' ')));
+  leave_return: 'Leave arrival (Check-in)',
+}[value] || (String(value || '').startsWith('leave_checkout') ? 'Leave departure (Exit)' : String(value || '').startsWith('leave_return') ? 'Leave arrival (Check-in)' : String(value || 'Alert').replaceAll('_', ' ')));
 
 function Toggle({ checked, onChange, label }) {
   return (
@@ -262,6 +270,7 @@ export default function HostelAlerts() {
         enabled: Boolean(settings.enabled),
         owner_summary_enabled: Boolean(settings.owner_summary_enabled),
         leave_checkout_alert_enabled: Boolean(settings.leave_checkout_alert_enabled),
+        leave_return_alert_enabled: Boolean(settings.leave_return_alert_enabled),
         escalation_minutes: Number(settings.escalation_minutes),
       });
       const normalized = normalizeSettings(response.data?.settings);
@@ -425,6 +434,31 @@ export default function HostelAlerts() {
         </div>
       </section>
 
+      {/* Leave Return / Arrival WhatsApp Alerts */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex gap-3">
+            <div className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${settings.leave_return_alert_enabled ? 'bg-teal-100 text-teal-700' : 'bg-slate-100 text-slate-500'}`}>
+              <LogIn size={22} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="font-bold text-slate-900">Leave & Night Out arrival alerts to parents</h2>
+                <span className="rounded-full bg-teal-100 px-2.5 py-0.5 text-xs font-semibold text-teal-800">Arrival confirmation</span>
+              </div>
+              <p className="mt-1 max-w-2xl text-sm leading-5 text-slate-500">
+                Instantly notify parents on WhatsApp when their ward returns and checks in back at the hostel gate from an approved leave or night out.
+              </p>
+            </div>
+          </div>
+          <Toggle
+            checked={Boolean(settings.leave_return_alert_enabled)}
+            onChange={(value) => update('leave_return_alert_enabled', value ? 1 : 0)}
+            label="Leave return notifications"
+          />
+        </div>
+      </section>
+
       {/* WhatsApp Message Templates - Expanded Full-Width Components */}
       <section className="space-y-4">
         <div>
@@ -458,6 +492,15 @@ export default function HostelAlerts() {
             onReset={() => update('leave_checkout_template', DEFAULT_LEAVE_CHECKOUT_TEMPLATE)}
             accent="fuchsia"
             fields={LEAVE_CHECKOUT_TEMPLATE_FIELDS}
+          />
+          <MessageEditor
+            title="Leave & Night Out arrival alert"
+            description="Sent instantly to parents when a resident returns and checks in back at the hostel gate from an approved leave or night out."
+            value={settings.leave_return_template}
+            onChange={(value) => update('leave_return_template', value)}
+            onReset={() => update('leave_return_template', DEFAULT_LEAVE_RETURN_TEMPLATE)}
+            accent="teal"
+            fields={LEAVE_RETURN_TEMPLATE_FIELDS}
           />
         </div>
       </section>
